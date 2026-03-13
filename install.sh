@@ -71,20 +71,6 @@ need_cmd pacstrap arch-install-scripts
 need_cmd sgdisk   gptfdisk
 need_cmd wipefs   util-linux
 
-# ---- Collect passwords upfront (all interactive prompts before destructive ops) ----
-echo "== Set passwords before we begin =="
-read -r -s -p "Root password: " ROOT_PW; echo
-read -r -s -p "Root password (confirm): " ROOT_PW2; echo
-if [[ "$ROOT_PW" != "$ROOT_PW2" ]]; then
-  echo "ERROR: Root passwords do not match."; exit 1
-fi
-
-read -r -s -p "${USERNAME} password: " USER_PW; echo
-read -r -s -p "${USERNAME} password (confirm): " USER_PW2; echo
-if [[ "$USER_PW" != "$USER_PW2" ]]; then
-  echo "ERROR: User passwords do not match."; exit 1
-fi
-
 ALL_DISKS=("$OS_DISK" "${DATA_DISKS[@]}")
 echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
 echo "  DANGER: THIS WILL ERASE: ${ALL_DISKS[*]}"
@@ -134,7 +120,7 @@ mount -t btrfs -o "${MEDIA_MOUNT_OPTIONS}" "LABEL=${MEDIA_LABEL}" "/mnt${MEDIA_M
 # ---- Base system ----
 echo "== Installing packages =="
 pacstrap -K /mnt \
-  base linux linux-firmware btrfs-progs intel-ucode \
+  base linux linux-headers linux-firmware btrfs-progs intel-ucode \
   sudo git nano networkmanager base-devel \
   openssh bolt ethtool smartmontools nvme-cli
 
@@ -146,7 +132,8 @@ arch-chroot /mnt /bin/bash -euo pipefail <<EOF
 # Time and Locale
 ln -sf /usr/share/zoneinfo/${TIMEZONE} /etc/localtime
 hwclock --systohc
-sed -i 's/^#\(${LOCALE} UTF-8\)/\1/' /etc/locale.gen || echo "${LOCALE} UTF-8" >> /etc/locale.gen
+sed -i 's/^#\(${LOCALE} UTF-8\)/\1/' /etc/locale.gen
+grep -q "^${LOCALE} UTF-8" /etc/locale.gen || echo "${LOCALE} UTF-8" >> /etc/locale.gen
 locale-gen
 echo "LANG=${LOCALE}" > /etc/locale.conf
 echo "KEYMAP=us" > /etc/vconsole.conf
@@ -233,11 +220,12 @@ systemctl enable smartd
 systemctl enable fstrim.timer
 EOF
 
-# ---- Passwords (non-interactive) ----
-echo "== Setting passwords =="
-echo "root:${ROOT_PW}" | arch-chroot /mnt chpasswd
-echo "${USERNAME}:${USER_PW}" | arch-chroot /mnt chpasswd
-unset ROOT_PW ROOT_PW2 USER_PW USER_PW2
+# ---- Passwords (interactive) ----
+echo "== Set passwords =="
+echo "Root:"
+arch-chroot /mnt passwd
+echo "User ${USERNAME}:"
+arch-chroot /mnt passwd "${USERNAME}"
 
 trap - EXIT
 umount -R /mnt
