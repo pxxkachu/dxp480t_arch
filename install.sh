@@ -29,7 +29,6 @@ source "$CONFIG_PATH"
 : "${MEDIA_MOUNT:?}"
 : "${MEDIA_MOUNT_OPTIONS:?}"
 
-# Array length check (fixed syntax)
 if [[ ${#DATA_DISKS[@]} -lt 2 ]]; then
   echo "ERROR: DATA_DISKS must contain at least 2 disks."
   exit 1
@@ -40,7 +39,15 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-# NVMe partition naming helper
+# ---- Cleanup trap ----
+cleanup() {
+  echo "== Cleanup: unmounting filesystems =="
+  umount -R /mnt 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# ---- Helpers ----
+
 part() {
   local disk="$1" num="$2"
   if [[ "$disk" =~ (nvme|mmcblk) ]]; then
@@ -50,19 +57,37 @@ part() {
   fi
 }
 
-need_cmd_or_install() {
-  local cmd="$1" pkg="$2"
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    pacman -Sy --noconfirm --needed "$pkg"
-  fi
+wait_for_partitions() {
+  udevadm settle --timeout=10
+}
+
+need_cmd() {
+  local cmd="$1" pkg="${2:-$1}"
+  command -v "$cmd" >/dev/null 2>&1 || pacman -Sy --noconfirm --needed "$pkg"
 }
 
 echo "== Ensuring required tools exist =="
-need_cmd_or_install pacstrap arch-install-scripts
-need_cmd_or_install sgdisk gptfdisk
+need_cmd pacstrap arch-install-scripts
+need_cmd sgdisk   gptfdisk
+need_cmd wipefs   util-linux
 
+# ---- Collect passwords upfront (all interactive prompts before destructive ops) ----
+echo "== Set passwords before we begin =="
+read -r -s -p "Root password: " ROOT_PW; echo
+read -r -s -p "Root password (confirm): " ROOT_PW2; echo
+if [[ "$ROOT_PW" != "$ROOT_PW2" ]]; then
+  echo "ERROR: Root passwords do not match."; exit 1
+fi
+
+read -r -s -p "${USERNAME} password: " USER_PW; echo
+read -r -s -p "${USERNAME} password (confirm): " USER_PW2; echo
+if [[ "$USER_PW" != "$USER_PW2" ]]; then
+  echo "ERROR: User passwords do not match."; exit 1
+fi
+
+ALL_DISKS=("$OS_DISK" "${DATA_DISKS[@]}")
 echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-echo "  DANGER: THIS WILL ERASE $OS_DISK AND ${DATA_DISKS[*]}"
+echo "  DANGER: THIS WILL ERASE: ${ALL_DISKS[*]}"
 echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
 read -r -p "Type ERASE to continue: " CONFIRM
 [[ "$CONFIRM" == "ERASE" ]] || exit 1
@@ -72,11 +97,12 @@ timedatectl set-ntp true || true
 EFI_PART="$(part "$OS_DISK" 1)"
 ROOT_PART="$(part "$OS_DISK" 2)"
 
+# ---- OS disk ----
 echo "== Partitioning OS disk ($OS_DISK) =="
 sgdisk --zap-all "$OS_DISK"
 sgdisk -n 1:0:+"$EFI_SIZE" -t 1:ef00 -c 1:"EFI"  "$OS_DISK"
-sgdisk -n 2:0:0           -t 2:8300 -c 2:"ROOT" "$OS_DISK"
-sleep 2
+sgdisk -n 2:0:0            -t 2:8300 -c 2:"ROOT" "$OS_DISK"
+wait_for_partitions
 
 echo "== Formatting OS partitions =="
 mkfs.fat -F32 "$EFI_PART"
@@ -86,23 +112,27 @@ mount "$ROOT_PART" /mnt
 mkdir -p /mnt/boot
 mount "$EFI_PART" /mnt/boot
 
+# ---- Data disks ----
 echo "== Partitioning data disks =="
 DATA_PARTS=()
 for d in "${DATA_DISKS[@]}"; do
-  p1="$(part "$d" 1)"
   sgdisk --zap-all "$d"
   sgdisk -n 1:0:0 -t 1:8300 -c 1:"BTRFS_DATA" "$d"
-  sleep 1
-  wipefs -a "$p1" || true
-  DATA_PARTS+=("$p1")
+  DATA_PARTS+=("$(part "$d" 1)")
+done
+wait_for_partitions
+
+for p in "${DATA_PARTS[@]}"; do
+  wipefs -af "$p"
 done
 
 echo "== Creating Btrfs pool =="
 mkfs.btrfs -f -L "$MEDIA_LABEL" -d raid0 -m raid1 "${DATA_PARTS[@]}"
 mkdir -p "/mnt${MEDIA_MOUNT}"
-mount -t btrfs "LABEL=${MEDIA_LABEL}" "/mnt${MEDIA_MOUNT}"
+mount -t btrfs -o "${MEDIA_MOUNT_OPTIONS}" "LABEL=${MEDIA_LABEL}" "/mnt${MEDIA_MOUNT}"
 
-echo "== Installing Packages (Base + NAS Tools) =="
+# ---- Base system ----
+echo "== Installing packages =="
 pacstrap -K /mnt \
   base linux linux-firmware btrfs-progs intel-ucode \
   sudo git nano networkmanager base-devel \
@@ -110,52 +140,106 @@ pacstrap -K /mnt \
 
 genfstab -U /mnt >> /mnt/etc/fstab
 
+# ---- Chroot configuration ----
 echo "== Configuring system inside chroot =="
 arch-chroot /mnt /bin/bash -euo pipefail <<EOF
 # Time and Locale
 ln -sf /usr/share/zoneinfo/${TIMEZONE} /etc/localtime
 hwclock --systohc
-echo "${LOCALE} UTF-8" >> /etc/locale.gen
+sed -i 's/^#\(${LOCALE} UTF-8\)/\1/' /etc/locale.gen || echo "${LOCALE} UTF-8" >> /etc/locale.gen
 locale-gen
 echo "LANG=${LOCALE}" > /etc/locale.conf
 echo "KEYMAP=us" > /etc/vconsole.conf
 
-# Hostname
+# Hostname and hosts
 echo "${HOSTNAME}" > /etc/hostname
+cat > /etc/hosts <<HOSTS
+127.0.0.1   localhost
+127.0.1.1   ${HOSTNAME}.localdomain ${HOSTNAME}
+
+::1         localhost ip6-localhost ip6-loopback
+fe00::0     ip6-localnet
+ff00::0     ip6-mcastprefix
+ff02::1     ip6-allnodes
+ff02::2     ip6-allrouters
+HOSTS
 
 # User setup
 if ! id "${USERNAME}" &>/dev/null; then
   useradd -m -G wheel -s /bin/bash "${USERNAME}"
 fi
 echo "%wheel ALL=(ALL:ALL) ALL" > /etc/sudoers.d/99-wheel
+chmod 440 /etc/sudoers.d/99-wheel
 
 # systemd-boot
 bootctl install
 ROOTUUID=\$(blkid -s UUID -o value "${ROOT_PART}")
 
-cat > /boot/loader/entries/arch.conf <<E
+cat > /boot/loader/entries/arch.conf <<ENTRY
 title   Arch Linux
 linux   /vmlinuz-linux
 initrd  /intel-ucode.img
 initrd  /initramfs-linux.img
 options root=UUID=\${ROOTUUID} rw nvme_core.default_ps_max_latency_us=0
-E
-echo "default arch.conf" > /boot/loader/loader.conf
+ENTRY
 
-# Services (with || true to prevent script exit on missing optional units)
-systemctl enable NetworkManager || true
-systemctl enable sshd || true
-systemctl enable boltd || true
-systemctl enable smartd || true
-systemctl enable fstrim.timer || true
+cat > /boot/loader/loader.conf <<LOADER
+default arch.conf
+timeout 3
+editor  no
+LOADER
+
+# Btrfs monthly scrub timer
+cat > /etc/systemd/system/btrfs-scrub@.timer <<TIMER
+[Unit]
+Description=Monthly Btrfs scrub on %f
+
+[Timer]
+OnCalendar=monthly
+AccuracySec=1d
+RandomizedDelaySec=1w
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMER
+
+cat > /etc/systemd/system/btrfs-scrub@.service <<SVC
+[Unit]
+Description=Btrfs scrub on %f
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/usr/bin/btrfs scrub start -B %f
+SVC
+
+systemctl enable btrfs-scrub@$(systemd-escape -p "${MEDIA_MOUNT}").timer
+
+# Hardware watchdog (Intel iTCO_wdt)
+mkdir -p /etc/systemd/system.conf.d
+cat > /etc/systemd/system.conf.d/watchdog.conf <<WDT
+[Manager]
+RuntimeWatchdogSec=30
+RebootWatchdogSec=10min
+WDT
+
+# Services
+systemctl enable NetworkManager
+systemctl enable sshd
+systemctl enable boltd
+systemctl enable smartd
+systemctl enable fstrim.timer
 EOF
 
-echo "== Set passwords =="
-echo "Root:"
-arch-chroot /mnt passwd
-echo "User ${USERNAME}:"
-arch-chroot /mnt passwd "${USERNAME}"
+# ---- Passwords (non-interactive) ----
+echo "== Setting passwords =="
+echo "root:${ROOT_PW}" | arch-chroot /mnt chpasswd
+echo "${USERNAME}:${USER_PW}" | arch-chroot /mnt chpasswd
+unset ROOT_PW ROOT_PW2 USER_PW USER_PW2
 
+trap - EXIT
 umount -R /mnt
 echo "Installation complete. Rebooting..."
 reboot
