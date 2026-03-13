@@ -87,7 +87,7 @@ for i in $(seq 1 60); do
 done
 
 FULL_FQDN="$(tailscale status --self --json | grep -oP '"DNSName"\s*:\s*"\K[^"]+' | sed 's/\.$//')"
-CURRENT_HOSTNAME="$(hostname)"
+CURRENT_HOSTNAME="$(cat /etc/hostname)"
 
 if [[ -z "$FULL_FQDN" ]]; then
   echo "ERROR: Could not determine Tailscale FQDN."
