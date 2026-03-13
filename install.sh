@@ -120,7 +120,7 @@ mount -t btrfs -o "${MEDIA_MOUNT_OPTIONS}" "LABEL=${MEDIA_LABEL}" "/mnt${MEDIA_M
 # ---- Base system ----
 echo "== Installing packages =="
 pacstrap -K /mnt \
-  base linux linux-headers linux-firmware btrfs-progs intel-ucode \
+  base linux linux-headers linux-firmware btrfs-progs intel-ucode zstd \
   sudo git nano networkmanager base-devel \
   openssh bolt ethtool smartmontools nvme-cli
 
@@ -215,17 +215,26 @@ WDT
 # Services
 systemctl enable NetworkManager
 systemctl enable sshd
-systemctl enable boltd
+systemctl enable bolt
 systemctl enable smartd
 systemctl enable fstrim.timer
 EOF
 
-# ---- Passwords (interactive) ----
+# ---- Passwords (interactive with retry) ----
+set_passwd() {
+  local user="$1" label="$2"
+  while true; do
+    echo "${label}:"
+    if arch-chroot /mnt passwd "$user"; then
+      break
+    fi
+    echo "Password not set. Try again."
+  done
+}
+
 echo "== Set passwords =="
-echo "Root:"
-arch-chroot /mnt passwd
-echo "User ${USERNAME}:"
-arch-chroot /mnt passwd "${USERNAME}"
+set_passwd root "Root"
+set_passwd "${USERNAME}" "User ${USERNAME}"
 
 trap - EXIT
 umount -R /mnt
