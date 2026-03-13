@@ -6,79 +6,57 @@ All commands assume root (`sudo -i`) unless noted otherwise.
 
 ---
 
-## 1. Create the media group and service accounts
+## Pre-flight checks
 
-Replace `media` with your preferred group name if different.
+Verify the Btrfs data pool is mounted:
 
 ```bash
-groupadd media
+mountpoint /media
 ```
 
+If not mounted:
+
 ```bash
-useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media qbittorrent
-useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media sonarr
-useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media radarr
-useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media prowlarr
-passwd --lock qbittorrent
-passwd --lock sonarr
-passwd --lock radarr
-passwd --lock prowlarr
+mount -t btrfs LABEL=media /media
 ```
 
-## 2. Install paru (AUR helper)
-
-Run as your normal user, not root:
+Verify internet connectivity:
 
 ```bash
-sudo pacman -S --needed base-devel git
-git clone https://aur.archlinux.org/paru-bin.git /tmp/paru-bin
-cd /tmp/paru-bin
-makepkg -si --noconfirm
-cd -
+curl -sf --max-time 5 https://archlinux.org && echo "OK"
 ```
 
-## 3. Install packages
+---
 
-Official repos:
-
-```bash
-sudo pacman -S --needed qbittorrent-nox tailscale
-```
-
-AUR packages (run as your normal user, not root):
+## 1. Install and authenticate Tailscale
 
 ```bash
-paru -S --needed sonarr-bin radarr-bin prowlarr-bin
-```
-
-## 4. Set up Tailscale
-
-```bash
+pacman -S --needed --noconfirm tailscale
 systemctl enable --now tailscaled
 tailscale up
 ```
 
-Follow the printed authentication link to register the NAS.
+Follow the printed authentication link in a browser.
 
-After authenticating, note your Tailscale IP and FQDN:
+After authenticating, get your Tailscale IP and FQDN:
 
 ```bash
 tailscale ip -4
-tailscale whois --self | grep 'Name:'
+tailscale status --self --json | grep -oP '"DNSName"\s*:\s*"\K[^"]+' | sed 's/\.$//'
 ```
 
-Store these for the steps below — referred to as `<TS_IP>` and `<FQDN>` (e.g., `100.x.x.x` and `kintoun.tail342cb.ts.net`).
+Note these values — referred to as `<TS_IP>` and `<FQDN>` below.
 
-## 5. Update /etc/hosts
+## 2. Update /etc/hosts
 
-Back up the current file, then overwrite it. Replace `<HOSTNAME>`, `<TS_IP>`, and `<FQDN>` with your values.
+Back up and rewrite. Replace `<HOSTNAME>`, `<TS_IP>`, and `<FQDN>` with your values.
 
 ```bash
 cp /etc/hosts /etc/hosts.bak
 ```
 
 ```bash
-cat <<EOF > /etc/hosts
+cat <<'EOF' > /etc/hosts
 127.0.0.1   localhost
 127.0.1.1   <HOSTNAME>.localdomain <HOSTNAME>
 
@@ -92,33 +70,122 @@ ff02::2     ip6-allrouters
 EOF
 ```
 
-## 6. Create service data directories
+## 3. Create media group and pre-create arr service accounts
+
+Create the shared media group:
 
 ```bash
-mkdir -p /var/lib/{qbittorrent,sonarr,radarr,prowlarr}
-chown qbittorrent:media /var/lib/qbittorrent
-chown sonarr:media      /var/lib/sonarr
-chown radarr:media      /var/lib/radarr
-chown prowlarr:media    /var/lib/prowlarr
-chmod 775 /var/lib/{qbittorrent,sonarr,radarr,prowlarr}
+groupadd media
 ```
 
-## 7. Create systemd service files
+Create sonarr, radarr, and prowlarr accounts **before** installing their AUR packages. The AUR packages ship sysusers files that auto-create these accounts with their own default groups. Pre-creating them with primary group `media` prevents that — sysusers skips users that already exist.
+
+```bash
+useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media sonarr
+useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media radarr
+useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media prowlarr
+passwd --lock sonarr
+passwd --lock radarr
+passwd --lock prowlarr
+```
+
+## 4. Install qBittorrent
+
+```bash
+pacman -S --needed --noconfirm qbittorrent-nox
+```
+
+The package creates a user called `qbt` via sysusers. Fix its primary group to `media`:
+
+```bash
+usermod --gid media qbt
+passwd --lock qbt
+```
+
+## 5. Install paru (AUR helper)
+
+Run as your normal user, not root:
+
+```bash
+rm -rf /tmp/paru-bin
+git clone https://aur.archlinux.org/paru-bin.git /tmp/paru-bin
+cd /tmp/paru-bin
+makepkg -si --noconfirm
+cd -
+rm -rf /tmp/paru-bin
+```
+
+## 6. Install Sonarr, Radarr, Prowlarr (AUR)
+
+Run as your normal user, not root:
+
+```bash
+paru -S --needed --noconfirm sonarr-bin radarr-bin prowlarr-bin
+```
+
+## 7. Add admin user to media group
+
+Switch back to root (`sudo -i`) for the remaining steps.
+
+```bash
+usermod -aG media admin
+```
+
+Log out and back in after this step for the group membership to take effect.
+
+## 8. Create service data directories
+
+```bash
+mkdir -p /var/lib/qbt
+chown qbt:media /var/lib/qbt
+chmod 775 /var/lib/qbt
+
+mkdir -p /var/lib/sonarr
+chown sonarr:media /var/lib/sonarr
+chmod 775 /var/lib/sonarr
+
+mkdir -p /var/lib/radarr
+chown radarr:media /var/lib/radarr
+chmod 775 /var/lib/radarr
+
+mkdir -p /var/lib/prowlarr
+chown prowlarr:media /var/lib/prowlarr
+chmod 775 /var/lib/prowlarr
+```
+
+## 9. Create media directories
+
+```bash
+mkdir -p /media/downloads/{pending,complete,torrents}
+mkdir -p /media/{movies,shows}
+
+chown qbt:media /media/downloads /media/downloads/pending /media/downloads/complete /media/downloads/torrents
+chown root:media /media/movies /media/shows
+
+chmod 2775 /media/downloads /media/downloads/pending /media/downloads/complete /media/downloads/torrents
+chmod 2775 /media/movies /media/shows
+```
+
+The setgid bit (2775) ensures new files inherit the `media` group regardless of which service creates them.
+
+## 10. Configure systemd services
 
 ### qBittorrent
 
+The package ships a template service, but we create a simple non-template unit:
+
 ```bash
-cat <<'EOF' > /etc/systemd/system/qbittorrent.service
+cat <<'EOF' > /etc/systemd/system/qbittorrent-nox.service
 [Unit]
-Description=qBittorrent
+Description=qBittorrent-nox
 After=network.target
 
 [Service]
 Type=simple
-User=qbittorrent
+User=qbt
 Group=media
 UMask=002
-Environment="HOME=/var/lib/qbittorrent"
+Environment="HOME=/var/lib/qbt"
 ExecStart=/usr/bin/qbittorrent-nox
 Restart=on-failure
 
@@ -127,100 +194,78 @@ WantedBy=multi-user.target
 EOF
 ```
 
-### Sonarr
+### Sonarr, Radarr, Prowlarr
+
+These AUR packages ship their own service files. Use drop-in overrides to set the group and umask without replacing the vendor units (so package updates flow through):
 
 ```bash
-cat <<'EOF' > /etc/systemd/system/sonarr.service
-[Unit]
-Description=Sonarr
-After=network.target
-
+mkdir -p /etc/systemd/system/sonarr.service.d
+cat <<'EOF' > /etc/systemd/system/sonarr.service.d/override.conf
 [Service]
-User=sonarr
 Group=media
 UMask=002
-Type=simple
-ExecStart=/usr/bin/sonarr -nobrowser -data=/var/lib/sonarr
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
 EOF
 ```
 
-### Radarr
-
 ```bash
-cat <<'EOF' > /etc/systemd/system/radarr.service
-[Unit]
-Description=Radarr
-After=network.target
-
+mkdir -p /etc/systemd/system/radarr.service.d
+cat <<'EOF' > /etc/systemd/system/radarr.service.d/override.conf
 [Service]
-User=radarr
 Group=media
 UMask=002
-Type=simple
-ExecStart=/usr/bin/radarr -nobrowser -data=/var/lib/radarr
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
 EOF
 ```
 
-### Prowlarr
-
 ```bash
-cat <<'EOF' > /etc/systemd/system/prowlarr.service
-[Unit]
-Description=Prowlarr
-After=network.target
-
+mkdir -p /etc/systemd/system/prowlarr.service.d
+cat <<'EOF' > /etc/systemd/system/prowlarr.service.d/override.conf
 [Service]
-User=prowlarr
 Group=media
 UMask=002
-Type=simple
-ExecStart=/usr/bin/prowlarr -nobrowser -data=/var/lib/prowlarr
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
 EOF
 ```
 
-## 8. Start services
+## 11. Start all services
 
 ```bash
 systemctl daemon-reload
-systemctl enable --now qbittorrent sonarr radarr prowlarr
+systemctl enable --now qbittorrent-nox sonarr radarr prowlarr
 ```
 
-## 9. Configure URL bases
+Verify they're running:
 
-Before setting up Tailscale Serve, each app needs its URL base configured so path-based routing works.
+```bash
+systemctl status qbittorrent-nox sonarr radarr prowlarr
+```
+
+Get qBittorrent's initial admin password from its journal:
+
+```bash
+journalctl -u qbittorrent-nox -n 20 | grep -i password
+```
+
+## 12. Configure URL bases
+
+Each app needs its URL base set so Tailscale Serve path-based routing works.
 
 Open each web UI directly by IP:
 
-| Service      | Direct URL                  | Setting location                          | Set URL Base to  |
-|--------------|-----------------------------|-------------------------------------------|------------------|
-| Sonarr       | `http://<TS_IP>:8989`       | Settings > General > URL Base             | `/sonarr`        |
-| Radarr       | `http://<TS_IP>:7878`       | Settings > General > URL Base             | `/radarr`        |
-| Prowlarr     | `http://<TS_IP>:9696`       | Settings > General > URL Base             | `/prowlarr`      |
-| qBittorrent  | `http://<TS_IP>:8080`       | Options > Web UI > Alternative Web UI Path| `/qbittorrent`   |
+| Service      | Direct URL                  | Setting location                           | Set URL Base to  |
+|--------------|-----------------------------|------------------------------------------- |------------------|
+| Sonarr       | `http://<TS_IP>:8989`       | Settings > General > URL Base              | `/sonarr`        |
+| Radarr       | `http://<TS_IP>:7878`       | Settings > General > URL Base              | `/radarr`        |
+| Prowlarr     | `http://<TS_IP>:9696`       | Settings > General > URL Base              | `/prowlarr`      |
+| qBittorrent  | `http://<TS_IP>:8080`       | Options > Web UI > Alternative Web UI Path | `/qbittorrent`   |
 
 Restart after changing:
 
 ```bash
-systemctl restart qbittorrent sonarr radarr prowlarr
+systemctl restart qbittorrent-nox sonarr radarr prowlarr
 ```
 
-## 10. Set up Tailscale Serve (HTTPS reverse proxy)
+## 13. Set up Tailscale Serve (HTTPS reverse proxy)
 
 Tailscale Serve terminates TLS automatically using Tailscale-managed certificates — no cert files to generate or renew.
-
-Enable HTTPS mode first:
 
 ```bash
 tailscale serve --https=443 --bg --set-path /sonarr http://127.0.0.1:8989
