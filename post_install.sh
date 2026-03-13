@@ -7,9 +7,13 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
+# Arch/Paru safety check
 REAL_USER="${SUDO_USER:?ERROR: Please run this script with 'sudo', not as a root login.}"
 
-HOSTNAME=$(hostname)
+# Get hostname safely even if inetutils isn't installed
+HOSTNAME=$(cat /etc/hostname)
+echo "Setting up services for NAS: $HOSTNAME"
+
 read -r -p "Enter the name of your media group (e.g., media): " MEDIA_GROUP_NAME
 
 if ! command -v paru >/dev/null 2>&1; then
@@ -35,8 +39,11 @@ for user in "${APPS[@]}"; do
 done
 
 echo "== Step 2: Installing Packages (Official & AUR) =="
+# Official packages via pacman
 pacman -S --needed --noconfirm nginx jq qbittorrent-nox tailscale
 
+# AUR packages via paru (run as the user who called sudo)
+echo "Installing AUR packages as $REAL_USER..."
 sudo -u "$REAL_USER" paru -S --needed --noconfirm sonarr-bin radarr-bin prowlarr-bin
 
 echo "== Step 3: Configuring Tailscale =="
@@ -48,6 +55,7 @@ tailscale up
 echo "----------------------------------------------------------------"
 
 TS_IP=$(tailscale ip -4)
+# Get clean FQDN (e.g., kintoun.tail342cb.ts.net)
 FULL_FQDN=$(tailscale status --self --json | jq -r '.Self.DNSName' | sed 's/\.$//')
 
 echo "Detected Tailscale IP: $TS_IP"
@@ -73,6 +81,7 @@ done
 
 echo "== Step 6: Creating Systemd Service Files =="
 
+# qBittorrent
 cat <<EOF > /etc/systemd/system/qbittorrent.service
 [Unit]
 Description=qBittorrent-nox service
@@ -91,6 +100,7 @@ Restart=on-failure
 WantedBy=multi-user.target
 EOF
 
+# *Arrs
 for app in sonarr radarr prowlarr; do
     cat <<EOF > /etc/systemd/system/${app}.service
 [Unit]
@@ -147,6 +157,7 @@ server {
 }
 EOF
 
+# Inject include into nginx.conf if missing
 if ! grep -q "sites-enabled" /etc/nginx/nginx.conf; then
     sed -i '/http {/a \    include sites-enabled/*;' /etc/nginx/nginx.conf
 fi
