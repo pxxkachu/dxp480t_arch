@@ -31,9 +31,9 @@ curl -sf --max-time 5 https://archlinux.org && echo "OK"
 ## 1. Install and authenticate Tailscale
 
 ```bash
-pacman -S --needed --noconfirm tailscale
-systemctl enable --now tailscaled
-tailscale up
+sudo pacman -S tailscale
+sudo systemctl enable --now tailscaled
+sudo tailscale up
 ```
 
 Follow the printed authentication link in a browser.
@@ -52,7 +52,7 @@ Note these values — referred to as `<TS_IP>` and `<FQDN>` below.
 Back up and rewrite. Replace `<HOSTNAME>`, `<TS_IP>`, and `<FQDN>` with your values.
 
 ```bash
-cp /etc/hosts /etc/hosts.bak
+sudo nano /etc/hosts
 ```
 
 ```bash
@@ -75,31 +75,31 @@ EOF
 Create the shared media group:
 
 ```bash
-groupadd media
+sudo groupadd media
 ```
 
 Create sonarr, radarr, and prowlarr accounts **before** installing their AUR packages. The AUR packages ship sysusers files that auto-create these accounts with their own default groups. Pre-creating them with primary group `media` prevents that — sysusers skips users that already exist.
 
 ```bash
-useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media sonarr
-useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media radarr
-useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media prowlarr
-passwd --lock sonarr
-passwd --lock radarr
-passwd --lock prowlarr
+sudo useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media sonarr
+sudo useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media radarr
+sudo useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media prowlarr
+sudo passwd --lock sonarr
+sudo passwd --lock radarr
+sudo passwd --lock prowlarr
 ```
 
 ## 4. Install qBittorrent
 
 ```bash
-pacman -S --needed --noconfirm qbittorrent-nox
+sudo pacman -S --needed --noconfirm qbittorrent-nox
 ```
 
 The package creates a user called `qbt` via sysusers. Fix its primary group to `media`:
 
 ```bash
-usermod --gid media qbt
-passwd --lock qbt
+sudo usermod --gid media qbt
+sudo passwd --lock qbt
 ```
 
 ## 5. Install paru (AUR helper)
@@ -107,12 +107,12 @@ passwd --lock qbt
 Run as your normal user, not root:
 
 ```bash
-rm -rf /tmp/paru-bin
+sudo rm -rf /tmp/paru-bin
 git clone https://aur.archlinux.org/paru-bin.git /tmp/paru-bin
 cd /tmp/paru-bin
 makepkg -si --noconfirm
 cd -
-rm -rf /tmp/paru-bin
+sudo rm -rf /tmp/paru-bin
 ```
 
 ## 6. Install Sonarr, Radarr, Prowlarr (AUR)
@@ -120,7 +120,7 @@ rm -rf /tmp/paru-bin
 Run as your normal user, not root:
 
 ```bash
-paru -S --needed --noconfirm sonarr-bin radarr-bin prowlarr-bin
+sudo paru -S -sonarr-bin radarr-bin prowlarr-bin
 ```
 
 ## 7. Add admin user to media group
@@ -128,7 +128,7 @@ paru -S --needed --noconfirm sonarr-bin radarr-bin prowlarr-bin
 Switch back to root (`sudo -i`) for the remaining steps.
 
 ```bash
-usermod -aG media admin
+sudo usermod -aG media admin
 ```
 
 Log out and back in after this step for the group membership to take effect.
@@ -136,34 +136,34 @@ Log out and back in after this step for the group membership to take effect.
 ## 8. Create service data directories
 
 ```bash
-mkdir -p /var/lib/qbt
-chown qbt:media /var/lib/qbt
-chmod 775 /var/lib/qbt
+sudo mkdir -p /var/lib/qbt
+sudo chown qbt:media /var/lib/qbt
+sudo chmod 775 /var/lib/qbt
 
-mkdir -p /var/lib/sonarr
-chown sonarr:media /var/lib/sonarr
-chmod 775 /var/lib/sonarr
+sudo mkdir -p /var/lib/sonarr
+sudo chown sonarr:media /var/lib/sonarr
+sudo chmod 775 /var/lib/sonarr
 
-mkdir -p /var/lib/radarr
-chown radarr:media /var/lib/radarr
-chmod 775 /var/lib/radarr
+sudo mkdir -p /var/lib/radarr
+sudo chown radarr:media /var/lib/radarr
+sudo chmod 775 /var/lib/radarr
 
-mkdir -p /var/lib/prowlarr
-chown prowlarr:media /var/lib/prowlarr
-chmod 775 /var/lib/prowlarr
+sudo mkdir -p /var/lib/prowlarr
+sudo chown prowlarr:media /var/lib/prowlarr
+sudo chmod 775 /var/lib/prowlarr
 ```
 
 ## 9. Create media directories
 
 ```bash
-mkdir -p /media/downloads/{pending,complete,torrents}
-mkdir -p /media/{movies,shows}
+sudo mkdir -p /media/downloads/{pending,complete,torrents}
+sudo mkdir -p /media/{movies,shows}
 
-chown qbt:media /media/downloads /media/downloads/pending /media/downloads/complete /media/downloads/torrents
-chown root:media /media/movies /media/shows
+sudo chown qbt:media /media/downloads /media/downloads/pending /media/downloads/complete /media/downloads/torrents
+sudo chown root:media /media/movies /media/shows
 
-chmod 2775 /media/downloads /media/downloads/pending /media/downloads/complete /media/downloads/torrents
-chmod 2775 /media/movies /media/shows
+sudo chmod 2775 /media/downloads /media/downloads/pending /media/downloads/complete /media/downloads/torrents
+sudo chmod 2775 /media/movies /media/shows
 ```
 
 The setgid bit (2775) ensures new files inherit the `media` group regardless of which service creates them.
