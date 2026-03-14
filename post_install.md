@@ -170,33 +170,22 @@ The setgid bit (2775) ensures new files inherit the `media` group regardless of 
 
 ## 10. Configure systemd services
 
+All packages ship their own service files. Use drop-in overrides to set the group and umask without replacing the vendor units — package updates flow through automatically.
+
 ### qBittorrent
 
-The package ships a template service, but we create a simple non-template unit:
+The package ships a template service (`qbittorrent-nox@.service`). The instance name is the user — `qbittorrent-nox@qbt` runs as user `qbt`. Override the instance to set our group and umask:
 
 ```bash
-cat <<'EOF' > /etc/systemd/system/qbittorrent-nox.service
-[Unit]
-Description=qBittorrent-nox
-After=network.target
-
+mkdir -p /etc/systemd/system/qbittorrent-nox@qbt.service.d
+cat <<'EOF' > /etc/systemd/system/qbittorrent-nox@qbt.service.d/override.conf
 [Service]
-Type=simple
-User=qbt
 Group=media
 UMask=002
-Environment="HOME=/var/lib/qbt"
-ExecStart=/usr/bin/qbittorrent-nox
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
 EOF
 ```
 
 ### Sonarr, Radarr, Prowlarr
-
-These AUR packages ship their own service files. Use drop-in overrides to set the group and umask without replacing the vendor units (so package updates flow through):
 
 ```bash
 mkdir -p /etc/systemd/system/sonarr.service.d
@@ -229,19 +218,19 @@ EOF
 
 ```bash
 systemctl daemon-reload
-systemctl enable --now qbittorrent-nox sonarr radarr prowlarr
+systemctl enable --now qbittorrent-nox@qbt sonarr radarr prowlarr
 ```
 
 Verify they're running:
 
 ```bash
-systemctl status qbittorrent-nox sonarr radarr prowlarr
+systemctl status qbittorrent-nox@qbt sonarr radarr prowlarr
 ```
 
 Get qBittorrent's initial admin password from its journal:
 
 ```bash
-journalctl -u qbittorrent-nox -n 20 | grep -i password
+journalctl -u qbittorrent-nox@qbt -n 20 | grep -i password
 ```
 
 ## 12. Configure URL bases
@@ -260,7 +249,7 @@ Open each web UI directly by IP:
 Restart after changing:
 
 ```bash
-systemctl restart qbittorrent-nox sonarr radarr prowlarr
+systemctl restart qbittorrent-nox@qbt sonarr radarr prowlarr
 ```
 
 ## 13. Set up Tailscale Serve (HTTPS reverse proxy)
