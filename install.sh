@@ -3,36 +3,10 @@ set -euo pipefail
 
 # -----------------------------
 # Arch installer for UGREEN DXP480T Plus
-# - OS: ext4 on OS_DISK (/dev/nvme3n1)
-# - Data: Btrfs RAID0 pool on DATA_DISKS
+# - OS: ext4 on a user-selected NVMe/SATA disk
+# - Data: Btrfs RAID0 pool on user-selected disks
+# - Fully interactive — no config file needed
 # -----------------------------
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_PATH="${CONFIG_PATH:-$SCRIPT_DIR/config.sh}"
-
-if [[ ! -f "$CONFIG_PATH" ]]; then
-  echo "ERROR: Missing config file: $CONFIG_PATH"
-  exit 1
-fi
-
-# shellcheck source=/dev/null
-source "$CONFIG_PATH"
-
-# ---- Required config variables ----
-: "${OS_DISK:?Set OS_DISK in config.sh (e.g. /dev/nvme3n1)}"
-: "${HOSTNAME:?}"
-: "${USERNAME:?}"
-: "${TIMEZONE:?}"
-: "${LOCALE:?}"
-: "${EFI_SIZE:?}"
-: "${MEDIA_LABEL:?}"
-: "${MEDIA_MOUNT:?}"
-: "${MEDIA_MOUNT_OPTIONS:?}"
-
-if [[ ${#DATA_DISKS[@]} -lt 2 ]]; then
-  echo "ERROR: DATA_DISKS must contain at least 2 disks."
-  exit 1
-fi
 
 if [[ $EUID -ne 0 ]]; then
   echo "ERROR: Run as root."
@@ -71,9 +45,167 @@ need_cmd pacstrap arch-install-scripts
 need_cmd sgdisk   gptfdisk
 need_cmd wipefs   util-linux
 
-ALL_DISKS=("$OS_DISK" "${DATA_DISKS[@]}")
+# Btrfs mount options (not prompted)
+MEDIA_MOUNT_OPTIONS="noatime,compress=zstd:1,space_cache=v2"
+
+# ---- Disk discovery ----
+discover_disks() {
+  AVAILABLE_DISKS=()
+  AVAILABLE_SIZES=()
+  AVAILABLE_MODELS=()
+  while IFS= read -r line; do
+    local name size model
+    name="$(echo "$line" | awk '{print $1}')"
+    size="$(echo "$line" | awk '{print $2}')"
+    model="$(echo "$line" | awk '{$1=""; $2=""; print}' | sed 's/^ *//')"
+    [[ -z "$model" ]] && model="(unknown)"
+    AVAILABLE_DISKS+=("$name")
+    AVAILABLE_SIZES+=("$size")
+    AVAILABLE_MODELS+=("$model")
+  done < <(lsblk -dpno NAME,SIZE,MODEL | grep -E '/dev/(sd|nvme|mmcblk)')
+
+  if [[ ${#AVAILABLE_DISKS[@]} -eq 0 ]]; then
+    echo "ERROR: No disks found."
+    exit 1
+  fi
+}
+
+print_disk_table() {
+  local disks=("$@")
+  printf "  %-4s  %-15s  %-10s  %s\n" "#" "DISK" "SIZE" "MODEL"
+  printf "  %-4s  %-15s  %-10s  %s\n" "---" "---------------" "----------" "-----"
+  local idx=1
+  for d in "${disks[@]}"; do
+    local i
+    for i in "${!AVAILABLE_DISKS[@]}"; do
+      if [[ "${AVAILABLE_DISKS[$i]}" == "$d" ]]; then
+        printf "  %-4s  %-15s  %-10s  %s\n" "$idx" "$d" "${AVAILABLE_SIZES[$i]}" "${AVAILABLE_MODELS[$i]}"
+        break
+      fi
+    done
+    ((idx++))
+  done
+}
+
+# ---- Interactive configuration ----
+echo ""
+echo "========================================"
+echo "  Arch Linux NAS Installer"
+echo "========================================"
+echo ""
+
+discover_disks
+
+# -- OS disk selection --
+echo "== Available disks =="
+print_disk_table "${AVAILABLE_DISKS[@]}"
+echo ""
+while true; do
+  read -r -p "Select the OS disk by number (e.g. 1): " OS_CHOICE
+  if [[ "$OS_CHOICE" =~ ^[0-9]+$ ]] && (( OS_CHOICE >= 1 && OS_CHOICE <= ${#AVAILABLE_DISKS[@]} )); then
+    OS_DISK="${AVAILABLE_DISKS[$((OS_CHOICE - 1))]}"
+    break
+  fi
+  echo "Invalid selection. Enter a number between 1 and ${#AVAILABLE_DISKS[@]}."
+done
+echo "  -> OS disk: $OS_DISK"
+echo ""
+
+# -- EFI partition size --
+while true; do
+  read -r -p "EFI partition size (e.g. 512M, 1G): " EFI_SIZE
+  if [[ "$EFI_SIZE" =~ ^[0-9]+(M|G)$ ]]; then
+    break
+  fi
+  echo "Invalid format. Use a number followed by M or G (e.g. 512M, 1G)."
+done
+echo ""
+
+# -- Data disk selection --
+REMAINING_DISKS=()
+for d in "${AVAILABLE_DISKS[@]}"; do
+  [[ "$d" != "$OS_DISK" ]] && REMAINING_DISKS+=("$d")
+done
+
+if [[ ${#REMAINING_DISKS[@]} -lt 2 ]]; then
+  echo "ERROR: Need at least 2 remaining disks for the data array, but only ${#REMAINING_DISKS[@]} available."
+  exit 1
+fi
+
+echo "== Available disks for data array (OS disk excluded) =="
+print_disk_table "${REMAINING_DISKS[@]}"
+echo ""
+
+while true; do
+  read -r -p "How many disks for the data array? (min 2, max ${#REMAINING_DISKS[@]}): " DATA_COUNT
+  if [[ "$DATA_COUNT" =~ ^[0-9]+$ ]] && (( DATA_COUNT >= 2 && DATA_COUNT <= ${#REMAINING_DISKS[@]} )); then
+    break
+  fi
+  echo "Invalid. Enter a number between 2 and ${#REMAINING_DISKS[@]}."
+done
+
+DATA_DISKS=()
+while true; do
+  read -r -p "Select $DATA_COUNT disks by number, space-separated (e.g. 1 2 3 4): " -a DATA_CHOICES
+  if [[ ${#DATA_CHOICES[@]} -ne $DATA_COUNT ]]; then
+    echo "Please select exactly $DATA_COUNT disks."
+    continue
+  fi
+  valid=true
+  DATA_DISKS=()
+  for c in "${DATA_CHOICES[@]}"; do
+    if [[ "$c" =~ ^[0-9]+$ ]] && (( c >= 1 && c <= ${#REMAINING_DISKS[@]} )); then
+      DATA_DISKS+=("${REMAINING_DISKS[$((c - 1))]}")
+    else
+      echo "Invalid number: $c. Enter numbers between 1 and ${#REMAINING_DISKS[@]}."
+      valid=false
+      break
+    fi
+  done
+  $valid && break
+done
+
+echo "  -> Data disks: ${DATA_DISKS[*]}"
+echo ""
+
+# -- System identity --
+read -r -p "Hostname (e.g. kintoun): " HOSTNAME
+read -r -p "Username (e.g. admin): " USERNAME
+
+echo ""
+echo "Timezone examples: America/Chicago, America/New_York, Europe/London, Asia/Tokyo"
+read -r -p "Timezone (e.g. America/Chicago): " TIMEZONE
+
+echo ""
+echo "Locale examples: en_US.UTF-8, en_GB.UTF-8, de_DE.UTF-8, ja_JP.UTF-8"
+read -r -p "Locale (e.g. en_US.UTF-8): " LOCALE
+
+echo ""
+read -r -p "Data array label (e.g. media): " MEDIA_LABEL
+read -r -p "Data array mount point (e.g. /media): " MEDIA_MOUNT
+
+# ---- Summary and confirmation ----
+echo ""
+echo "========================================"
+echo "  Configuration Summary"
+echo "========================================"
+echo ""
+echo "  OS disk:          $OS_DISK"
+echo "  EFI size:         $EFI_SIZE"
+echo "  Data disks:       ${DATA_DISKS[*]}"
+echo "  Data RAID:        RAID0 (data) / RAID1 (metadata)"
+echo "  Mount options:    $MEDIA_MOUNT_OPTIONS"
+echo ""
+echo "  Hostname:         $HOSTNAME"
+echo "  Username:         $USERNAME"
+echo "  Timezone:         $TIMEZONE"
+echo "  Locale:           $LOCALE"
+echo ""
+echo "  Array label:      $MEDIA_LABEL"
+echo "  Array mount:      $MEDIA_MOUNT"
+echo ""
 echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-echo "  DANGER: THIS WILL ERASE: ${ALL_DISKS[*]}"
+echo "  DANGER: THIS WILL ERASE: $OS_DISK ${DATA_DISKS[*]}"
 echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
 read -r -p "Type ERASE to continue: " CONFIRM
 [[ "$CONFIRM" == "ERASE" ]] || exit 1
@@ -96,7 +228,7 @@ mkfs.ext4 -F -L archroot "$ROOT_PART"
 
 mount "$ROOT_PART" /mnt
 mkdir -p /mnt/boot
-mount "$EFI_PART" /mnt/boot
+mount -o fmask=0077,dmask=0077 "$EFI_PART" /mnt/boot
 
 # ---- Data disks ----
 echo "== Partitioning data disks =="
