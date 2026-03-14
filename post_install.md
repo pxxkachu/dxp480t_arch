@@ -177,8 +177,8 @@ All packages ship their own service files. Use drop-in overrides to set the grou
 The package ships a template service (`qbittorrent-nox@.service`). The instance name is the user — `qbittorrent-nox@qbt` runs as user `qbt`. Override the instance to set our group and umask:
 
 ```bash
-mkdir -p /etc/systemd/system/qbittorrent-nox@qbt.service.d
-cat <<'EOF' > /etc/systemd/system/qbittorrent-nox@qbt.service.d/override.conf
+sudo mkdir -p /etc/systemd/system/qbittorrent-nox@qbt.service.d
+sudo cat <<'EOF' > /etc/systemd/system/qbittorrent-nox@qbt.service.d/override.conf
 [Service]
 Group=media
 UMask=002
@@ -188,8 +188,8 @@ EOF
 ### Sonarr, Radarr, Prowlarr
 
 ```bash
-mkdir -p /etc/systemd/system/sonarr.service.d
-cat <<'EOF' > /etc/systemd/system/sonarr.service.d/override.conf
+sudo mkdir -p /etc/systemd/system/sonarr.service.d
+sudo cat <<'EOF' > /etc/systemd/system/sonarr.service.d/override.conf
 [Service]
 Group=media
 UMask=002
@@ -197,8 +197,8 @@ EOF
 ```
 
 ```bash
-mkdir -p /etc/systemd/system/radarr.service.d
-cat <<'EOF' > /etc/systemd/system/radarr.service.d/override.conf
+sudo mkdir -p /etc/systemd/system/radarr.service.d
+sudo cat <<'EOF' > /etc/systemd/system/radarr.service.d/override.conf
 [Service]
 Group=media
 UMask=002
@@ -206,8 +206,8 @@ EOF
 ```
 
 ```bash
-mkdir -p /etc/systemd/system/prowlarr.service.d
-cat <<'EOF' > /etc/systemd/system/prowlarr.service.d/override.conf
+sudo mkdir -p /etc/systemd/system/prowlarr.service.d
+sudo cat <<'EOF' > /etc/systemd/system/prowlarr.service.d/override.conf
 [Service]
 Group=media
 UMask=002
@@ -217,14 +217,14 @@ EOF
 ## 11. Start all services
 
 ```bash
-systemctl daemon-reload
-systemctl enable --now qbittorrent-nox@qbt sonarr radarr prowlarr
+sudo systemctl daemon-reload
+sudo systemctl enable --now qbittorrent-nox@qbt sonarr radarr prowlarr
 ```
 
 Verify they're running:
 
 ```bash
-systemctl status qbittorrent-nox@qbt sonarr radarr prowlarr
+sudo systemctl status qbittorrent-nox@qbt sonarr radarr prowlarr
 ```
 
 Get qBittorrent's initial admin password from its journal:
