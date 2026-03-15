@@ -107,12 +107,12 @@ sudo passwd --lock qbt
 **Run as your normal user — do NOT use sudo:**
 
 ```bash
-rm -rf /tmp/paru-bin
-git clone https://aur.archlinux.org/paru-bin.git /tmp/paru-bin
-cd /tmp/paru-bin
+rm -rf /tmp/paru-git
+git clone https://aur.archlinux.org/paru-git.git /tmp/paru-git
+cd /tmp/paru-git
 makepkg -si --noconfirm
 cd -
-rm -rf /tmp/paru-bin
+rm -rf /tmp/paru-git
 ```
 
 ## 6. Install Sonarr, Radarr, Prowlarr (AUR)
@@ -212,17 +212,49 @@ UMask=002
 EOF
 ```
 
-## 11. Start all services
+## 11. Install and configure Plex Media Server
+
+**Run as your normal user — do NOT use sudo:**
+
+```bash
+paru -S --needed --noconfirm plex-media-server
+```
+
+The package creates a `plex` user. Add it to the `media` group so it can read media files:
+
+```bash
+sudo usermod -aG media plex
+```
+
+Create the Plex data directory with correct ownership:
+
+```bash
+sudo mkdir -p /var/lib/plex
+sudo chown plex:plex /var/lib/plex
+sudo chmod 755 /var/lib/plex
+```
+
+Add a drop-in override for the media group and umask (same pattern as other services):
+
+```bash
+sudo mkdir -p /etc/systemd/system/plexmediaserver.service.d
+sudo tee /etc/systemd/system/plexmediaserver.service.d/override.conf > /dev/null <<'EOF'
+[Service]
+UMask=002
+EOF
+```
+
+## 12. Start all services
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now qbittorrent-nox@qbt sonarr radarr prowlarr
+sudo systemctl enable --now qbittorrent-nox@qbt sonarr radarr prowlarr plexmediaserver
 ```
 
 Verify they're running:
 
 ```bash
-systemctl status qbittorrent-nox@qbt sonarr radarr prowlarr
+systemctl status qbittorrent-nox@qbt sonarr radarr prowlarr plexmediaserver
 ```
 
 Get qBittorrent's initial admin password from its journal:
@@ -231,7 +263,7 @@ Get qBittorrent's initial admin password from its journal:
 sudo journalctl -u qbittorrent-nox@qbt -n 20 | grep -i password
 ```
 
-## 12. Access services
+## 13. Access services
 
 All services are accessible from any device on your Tailscale network using the Tailscale IP:
 
@@ -241,10 +273,13 @@ All services are accessible from any device on your Tailscale network using the 
 | Sonarr       | `http://<TS_IP>:8989`       |
 | Radarr       | `http://<TS_IP>:7878`       |
 | Prowlarr     | `http://<TS_IP>:9696`       |
+| Plex         | `http://<TS_IP>:32400/web`  |
 
 Since Tailscale encrypts all traffic between devices (WireGuard), HTTPS is not required for services accessed within the tailnet.
 
-## 13. Set up Btrfs data SSD
+On first access, Plex requires initial setup from a browser on the same network. Visit `http://<TS_IP>:32400/web` and sign in with your Plex account. Under Settings > Libraries, add your media folders (`/media/movies`, `/media/shows`).
+
+## 14. Set up Btrfs data SSD
 
 This sets up a single 2.5" SSD at `/data` with a subvolume layout that supports incremental backups via `btrfs send/receive` when a second SSD is added later.
 
@@ -258,9 +293,12 @@ Replace `/dev/sdX` below with the actual device (e.g., `/dev/sde`).
 
 ### Partition and format
 
+`sfdisk` is used here instead of `sgdisk` since it ships with `util-linux` (always installed).
+
 ```bash
-sudo sgdisk --zap-all /dev/sdX
-sudo sgdisk -n 1:0:0 -t 1:8300 -c 1:"DATA" /dev/sdX
+sudo wipefs -af /dev/sdX
+echo 'label: gpt
+type=linux' | sudo sfdisk /dev/sdX
 sudo udevadm settle --timeout=10
 sudo mkfs.btrfs -f -L data /dev/sdX1
 ```
@@ -379,7 +417,7 @@ Verify the timer is active:
 systemctl list-timers btrfs-snapshot-data.timer
 ```
 
-## 14. (Future) Add backup SSD with btrfs send/receive
+## 15. (Future) Add backup SSD with btrfs send/receive
 
 When the second SSD arrives, format it, do an initial full send, then incremental sends going forward.
 
@@ -388,8 +426,9 @@ When the second SSD arrives, format it, do an initial full send, then incrementa
 Replace `/dev/sdY` with the actual device.
 
 ```bash
-sudo sgdisk --zap-all /dev/sdY
-sudo sgdisk -n 1:0:0 -t 1:8300 -c 1:"DATABACKUP" /dev/sdY
+sudo wipefs -af /dev/sdY
+echo 'label: gpt
+type=linux' | sudo sfdisk /dev/sdY
 sudo udevadm settle --timeout=10
 sudo mkfs.btrfs -f -L databackup /dev/sdY1
 
