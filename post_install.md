@@ -20,18 +20,12 @@ If not mounted:
 sudo mount -t btrfs LABEL=media /media
 ```
 
-Verify internet connectivity:
-
-```bash
-curl -sf --max-time 5 https://archlinux.org && echo "OK"
-```
-
 ---
 
 ## 1. Install and authenticate Tailscale
 
 ```bash
-sudo pacman -S --needed --noconfirm tailscale
+sudo pacman -S tailscale
 sudo systemctl enable --now tailscaled
 sudo tailscale up
 ```
@@ -45,18 +39,13 @@ tailscale ip -4
 tailscale status --self --json | grep -oP '"DNSName"\s*:\s*"\K[^"]+' | sed 's/\.$//'
 ```
 
-Note these values — referred to as `<TS_IP>` and `<FQDN>` below.
+Note these values — referred to as `<st_ip_v4>` and `<full_mask` below.
 
 ## 2. Update /etc/hosts
 
-Back up and rewrite. Replace `<HOSTNAME>`, `<TS_IP>`, and `<FQDN>` with your actual values before running:
-
 ```bash
-sudo cp /etc/hosts /etc/hosts.bak
-```
+sudo nano /etc/hosts
 
-```bash
-sudo tee /etc/hosts > /dev/null <<'EOF'
 127.0.0.1   localhost
 127.0.1.1   <HOSTNAME>.localdomain <HOSTNAME>
 
@@ -66,8 +55,7 @@ ff00::0     ip6-mcastprefix
 ff02::1     ip6-allnodes
 ff02::2     ip6-allrouters
 
-<TS_IP>     <FQDN> <HOSTNAME>
-EOF
+<ts_ip_v4>     <full_mask> <HOSTNAME>
 ```
 
 ## 3. Create media group and pre-create arr service accounts
@@ -84,15 +72,17 @@ Create sonarr, radarr, and prowlarr accounts **before** installing their AUR pac
 sudo useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media sonarr
 sudo useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media radarr
 sudo useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media prowlarr
+sudo useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media plex
 sudo passwd --lock sonarr
 sudo passwd --lock radarr
 sudo passwd --lock prowlarr
+sudo passwd --lock plex
 ```
 
 ## 4. Install qBittorrent
 
 ```bash
-sudo pacman -S --needed --noconfirm qbittorrent-nox
+sudo pacman -S qbittorrent-nox
 ```
 
 The package creates a user called `qbt` via sysusers. Fix its primary group to `media`:
@@ -107,12 +97,11 @@ sudo passwd --lock qbt
 **Run as your normal user — do NOT use sudo:**
 
 ```bash
-rm -rf /tmp/paru-git
 git clone https://aur.archlinux.org/paru-git.git /tmp/paru-git
-cd /tmp/paru-git
-makepkg -si --noconfirm
-cd -
-rm -rf /tmp/paru-git
+&& cd /tmp/paru-git
+&& makepkg -si --noconfirm
+&& cd -
+&& rm -rf /tmp/paru-git
 ```
 
 ## 6. Install Sonarr, Radarr, Prowlarr (AUR)
@@ -120,7 +109,7 @@ rm -rf /tmp/paru-git
 **Run as your normal user — do NOT use sudo:**
 
 ```bash
-paru -S --needed --noconfirm sonarr-bin radarr-bin prowlarr-bin
+paru -S --needed sonarr-bin radarr-bin prowlarr-bin
 ```
 
 ## 7. Add admin user to media group
@@ -158,10 +147,10 @@ sudo mkdir -p /media/downloads/{pending,complete,torrents}
 sudo mkdir -p /media/{movies,shows}
 
 sudo chown qbt:media /media/downloads /media/downloads/pending /media/downloads/complete /media/downloads/torrents
-sudo chown root:media /media/movies /media/shows
+sudo chown radarr:media /media/movies
+sudo chown sonarr:media /media/shows
 
-sudo chmod 2775 /media/downloads /media/downloads/pending /media/downloads/complete /media/downloads/torrents
-sudo chmod 2775 /media/movies /media/shows
+sudo chmod 2775 /media/downloads /media/downloads/pending /media/downloads/complete /media/downloads/torrents /media/movies /media/shows
 ```
 
 The setgid bit (2775) ensures new files inherit the `media` group regardless of which service creates them.
@@ -176,40 +165,40 @@ The package ships a template service (`qbittorrent-nox@.service`). The instance 
 
 ```bash
 sudo mkdir -p /etc/systemd/system/qbittorrent-nox@qbt.service.d
-sudo tee /etc/systemd/system/qbittorrent-nox@qbt.service.d/override.conf > /dev/null <<'EOF'
+sudo nano /etc/systemd/system/qbittorrent-nox@qbt.service.d/override.conf
+
 [Service]
 Group=media
 UMask=002
-EOF
 ```
 
 ### Sonarr, Radarr, Prowlarr
 
 ```bash
 sudo mkdir -p /etc/systemd/system/sonarr.service.d
-sudo tee /etc/systemd/system/sonarr.service.d/override.conf > /dev/null <<'EOF'
+sudo nano /etc/systemd/system/sonarr.service.d/override.conf
+
 [Service]
 Group=media
 UMask=002
-EOF
 ```
 
 ```bash
 sudo mkdir -p /etc/systemd/system/radarr.service.d
-sudo tee /etc/systemd/system/radarr.service.d/override.conf > /dev/null <<'EOF'
+sudo nano /etc/systemd/system/radarr.service.d/override.conf
+
 [Service]
 Group=media
 UMask=002
-EOF
 ```
 
 ```bash
 sudo mkdir -p /etc/systemd/system/prowlarr.service.d
-sudo tee /etc/systemd/system/prowlarr.service.d/override.conf > /dev/null <<'EOF'
+sudo nano /etc/systemd/system/prowlarr.service.d/override.conf
+
 [Service]
 Group=media
 UMask=002
-EOF
 ```
 
 ## 11. Install and configure Plex Media Server
@@ -217,7 +206,7 @@ EOF
 **Run as your normal user — do NOT use sudo:**
 
 ```bash
-paru -S --needed --noconfirm plex-media-server
+paru -S plex-media-server
 ```
 
 The package creates a `plex` user. Add it to the `media` group so it can read media files:
@@ -238,10 +227,11 @@ Add a drop-in override for the media group and umask (same pattern as other serv
 
 ```bash
 sudo mkdir -p /etc/systemd/system/plexmediaserver.service.d
-sudo tee /etc/systemd/system/plexmediaserver.service.d/override.conf > /dev/null <<'EOF'
+sudo nano /etc/systemd/system/plexmediaserver.service.d/override.conf
+
 [Service]
+Group=media
 UMask=002
-EOF
 ```
 
 ## 12. Start all services
@@ -275,25 +265,13 @@ All services are accessible from any device on your Tailscale network using the 
 | Prowlarr     | `http://<TS_IP>:9696`       |
 | Plex         | `http://<TS_IP>:32400/web`  |
 
-Since Tailscale encrypts all traffic between devices (WireGuard), HTTPS is not required for services accessed within the tailnet.
-
-On first access, Plex requires initial setup from a browser on the same network. Visit `http://<TS_IP>:32400/web` and sign in with your Plex account. Under Settings > Libraries, add your media folders (`/media/movies`, `/media/shows`).
-
 ## 14. Set up Btrfs data SSD
 
 This sets up a single 2.5" SSD at `/data` with a subvolume layout that supports incremental backups via `btrfs send/receive` when a second SSD is added later.
 
-### Identify the SSD
-
-```bash
-lsblk -dpno NAME,SIZE,MODEL
-```
-
 Replace `/dev/sdX` below with the actual device (e.g., `/dev/sde`).
 
 ### Partition and format
-
-`sfdisk` is used here instead of `sgdisk` since it ships with `util-linux` (always installed).
 
 ```bash
 # Wipe existing signatures to ensure a clean start
