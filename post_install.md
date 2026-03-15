@@ -412,24 +412,25 @@ ls /data/.snapshots/
 
 ```bash
 # Service
-sudo nano /etc/systemd/system/btrfs-snap.service
+sudo nano /etc/systemd/system/daily-data-snapshot.service
 
 [Unit]
-Description=Daily Btrfs Snapshot
+Description=Daily Data Snapshot
 Requires=data.mount
 After=data.mount
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/btrfs-daily-snap.sh
+ExecStart=/usr/local/bin/daily-data-snapshot.sh
 # Runs the script with lower priority so it doesn't slow down the PC
 Nice=19
 IOSchedulingClass=idle
 
 # Timer
-sudo nano /etc/systemd/system/btrfs-snap.timer
+sudo nano /etc/systemd/system/daily-data-snapshot.timer
+
 [Unit]
-Description=Run Btrfs Snapshot Daily
+Description=Create daily data snapshots
 
 [Timer]
 # Run every day at 12:00 AM
@@ -442,10 +443,10 @@ WantedBy=timers.target
 
 # Enable timer
 sudo systemctl daemon-reload
-sudo systemctl enable --now btrfs-snap.timer
+sudo systemctl enable --now daily-data-snapshot.timer
 
 # Verify timer is active
-systemctl list-timers btrfs-snapshot-data.timer
+systemctl list-timers daily-data-snapshot.timer
 ```
 
 ## 15. (Future) Add backup SSD with btrfs send/receive
