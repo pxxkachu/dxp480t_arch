@@ -305,8 +305,18 @@ done
 
 echo "== Creating Btrfs pool =="
 mkfs.btrfs -f -L "$MEDIA_LABEL" -d raid0 -m raid1 "${DATA_PARTS[@]}"
-mkdir -p "/mnt${MEDIA_MOUNT}"
-mount -t btrfs -o "${MEDIA_MOUNT_OPTIONS}" "LABEL=${MEDIA_LABEL}" "/mnt${MEDIA_MOUNT}"
+
+echo "== Creating Btrfs subvolumes =="
+mkdir -p /mnt/btrfs-setup
+mount -t btrfs "LABEL=${MEDIA_LABEL}" /mnt/btrfs-setup
+btrfs subvolume create /mnt/btrfs-setup/@media
+btrfs subvolume create /mnt/btrfs-setup/@snapshots
+umount /mnt/btrfs-setup
+rmdir /mnt/btrfs-setup
+
+mkdir -p "/mnt${MEDIA_MOUNT}" "/mnt${MEDIA_MOUNT}/.snapshots"
+mount -t btrfs -o "${MEDIA_MOUNT_OPTIONS},subvol=@media" "LABEL=${MEDIA_LABEL}" "/mnt${MEDIA_MOUNT}"
+mount -t btrfs -o "${MEDIA_MOUNT_OPTIONS},subvol=@snapshots" "LABEL=${MEDIA_LABEL}" "/mnt${MEDIA_MOUNT}/.snapshots"
 
 # ---- Base system ----
 echo "== Checking network connectivity =="
@@ -408,6 +418,52 @@ ExecStart=/usr/bin/btrfs scrub start -B %f
 SVC
 
 systemctl enable btrfs-scrub@$(systemd-escape -p "${MEDIA_MOUNT}").timer
+
+# Btrfs daily snapshot script for media array
+cat > /usr/local/bin/btrfs-snapshot-media <<'SNAPSCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+SNAP_DIR="SNAP_MOUNT_PLACEHOLDER/.snapshots"
+TIMESTAMP=\$(date +%Y%m%d-%H%M%S)
+KEEP=7
+btrfs subvolume snapshot -r "SNAP_MOUNT_PLACEHOLDER" "\${SNAP_DIR}/\${TIMESTAMP}"
+echo "Created snapshot: \${SNAP_DIR}/\${TIMESTAMP}"
+mapfile -t ALL < <(ls -1d "\${SNAP_DIR}"/2* 2>/dev/null | sort)
+if (( \${#ALL[@]} > KEEP )); then
+  DELETE=("\${ALL[@]:0:\${#ALL[@]}-KEEP}")
+  for snap in "\${DELETE[@]}"; do
+    btrfs subvolume delete "\$snap"
+    echo "Deleted old snapshot: \$snap"
+  done
+fi
+SNAPSCRIPT
+sed -i "s|SNAP_MOUNT_PLACEHOLDER|${MEDIA_MOUNT}|g" /usr/local/bin/btrfs-snapshot-media
+chmod +x /usr/local/bin/btrfs-snapshot-media
+
+cat > /etc/systemd/system/btrfs-snapshot-media.service <<'SNAPSVC'
+[Unit]
+Description=Btrfs snapshot of media array
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/btrfs-snapshot-media
+SNAPSVC
+
+cat > /etc/systemd/system/btrfs-snapshot-media.timer <<'SNAPTIMER'
+[Unit]
+Description=Daily Btrfs snapshot of media array
+
+[Timer]
+OnCalendar=daily
+AccuracySec=1h
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+SNAPTIMER
+
+systemctl enable btrfs-snapshot-media.timer
 
 # zram swap (compressed RAM-backed swap, no disk I/O)
 mkdir -p /etc/systemd/zram-generator.conf.d
