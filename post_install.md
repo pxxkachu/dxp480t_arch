@@ -296,49 +296,53 @@ Replace `/dev/sdX` below with the actual device (e.g., `/dev/sde`).
 `sfdisk` is used here instead of `sgdisk` since it ships with `util-linux` (always installed).
 
 ```bash
-sudo wipefs -af /dev/sdX
-echo 'label: gpt
-type=linux' | sudo sfdisk /dev/sdX
-sudo udevadm settle --timeout=10
-sudo mkfs.btrfs -f -L data /dev/sdX1
+# Wipe existing signatures to ensure a clean start
+sudo wipefs -a /dev/sda
+
+# Create the Btrfs filesystem with the label "data"
+sudo mkfs.btrfs -f -L data /dev/sda
 ```
 
 ### Create subvolume layout
 
-Btrfs send/receive operates on subvolumes, not filesystems. This layout must exist before any data is written.
-
 ```bash
-sudo mkdir -p /mnt/temp
-sudo mount /dev/sdX1 /mnt/temp
-sudo btrfs subvolume create /mnt/temp/@data
-sudo btrfs subvolume create /mnt/temp/@snapshots
-sudo umount /mnt/temp
-sudo rmdir /mnt/temp
-```
+# Create a temporary mount point and mount the drive root
+sudo mkdir -p /mnt/tmp_root
+sudo mount /dev/sda /mnt/tmp_root
 
-- `@data` — live data subvolume, mounted at `/data`
-- `@snapshots` — holds read-only snapshots for send/receive
+# Create subvolumes for your data and your snapshots
+# Using '@' is a common convention to identify top-level subvolumes
+sudo btrfs subvolume create /mnt/tmp_root/@data
+sudo btrfs subvolume create /mnt/tmp_root/@snapshots
+
+# Clean up temporary mount
+sudo umount /mnt/tmp_root
+```
 
 ### Mount subvolumes
 
-Mount `@data` first, create the `.snapshots` directory inside it, then mount `@snapshots` over it:
-
 ```bash
+# Create the permanent mount point
 sudo mkdir -p /data
-sudo mount -o noatime,compress=zstd:1,subvol=@data LABEL=data /data
+
+# Mount the @data subvolume
+sudo mount -o subvol=@data /dev/sda /data
+
+# Inside your data subvolume, create a folder to access your snapshots
 sudo mkdir -p /data/.snapshots
-sudo mount -o noatime,compress=zstd:1,subvol=@snapshots LABEL=data /data/.snapshots
+
+# Mount the @snapshots subvolume into that folder
+sudo mount -o subvol=@snapshots /dev/sda /data/.snapshots
 ```
 
 ### Add to fstab
 
 ```bash
-sudo tee -a /etc/fstab > /dev/null <<'FSTAB'
+sudo nano /etc/fstab
 
-# Btrfs data SSD
-LABEL=data  /data             btrfs  noatime,compress=zstd:1,subvol=@data       0 0
-LABEL=data  /data/.snapshots  btrfs  noatime,compress=zstd:1,subvol=@snapshots  0 0
-FSTAB
+# data
+UUID=<drive uuid>  /data             btrfs  noatime,compress=zstd:1,subvol=@data       0 0
+UUID=<drive uuid>  /data/.snapshots  btrfs  noatime,compress=zstd:1,subvol=@snapshots  0 0
 ```
 
 Verify fstab works (the `.snapshots` dir persists inside `@data` so `mount -a` will find it):
@@ -354,69 +358,93 @@ mountpoint /data/.snapshots
 ### Create snapshot script
 
 ```bash
-sudo tee /usr/local/bin/btrfs-snapshot-data > /dev/null << 'SCRIPT'
+sudo nano /usr/local/bin/daily-data-snapshot.sh
+
 #!/usr/bin/env bash
+# Strict mode: Exit on error, undefined vars, or pipe failures
 set -euo pipefail
 
+# CONFIGURATION
+SOURCE_SUBVOL="/data"
 SNAP_DIR="/data/.snapshots"
-TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-KEEP=7
+# Naming with date for easy sorting and send/receive identification
+TIMESTAMP=$(date +%Y-%m-%d)
+KEEP=14
 
-btrfs subvolume snapshot -r /data "${SNAP_DIR}/${TIMESTAMP}"
-echo "Created snapshot: ${SNAP_DIR}/${TIMESTAMP}"
-
-mapfile -t ALL < <(ls -1d "${SNAP_DIR}"/2* 2>/dev/null | sort)
-if (( ${#ALL[@]} > KEEP )); then
-  DELETE=("${ALL[@]:0:${#ALL[@]}-KEEP}")
-  for snap in "${DELETE[@]}"; do
-    btrfs subvolume delete "$snap"
-    echo "Deleted old snapshot: $snap"
-  done
+# 1. Create a new read-only snapshot
+# Snapshots must be read-only (-r) to be used with 'btrfs send'
+if [ ! -d "${SNAP_DIR}/${TIMESTAMP}" ]; then
+    btrfs subvolume snapshot -r "$SOURCE_SUBVOL" "${SNAP_DIR}/${TIMESTAMP}"
+    echo "Created daily snapshot: ${TIMESTAMP}"
+else
+    echo "Snapshot for ${TIMESTAMP} already exists. Skipping."
 fi
-SCRIPT
-sudo chmod +x /usr/local/bin/btrfs-snapshot-data
+
+# 2. Cleanup old snapshots
+# List snapshots in the directory, sort them, and identify which to delete
+mapfile -t ALL_SNAPS < <(ls -1d "${SNAP_DIR}"/20* 2>/dev/null | sort)
+
+if (( ${#ALL_SNAPS[@]} > KEEP )); then
+    # Calculate how many to delete to keep exactly $KEEP
+    NUM_TO_DELETE=$(( ${#ALL_SNAPS[@]} - KEEP ))
+    DELETION_LIST=("${ALL_SNAPS[@]:0:NUM_TO_DELETE}")
+    
+    for old_snap in "${DELETION_LIST[@]}"; do
+        echo "Deleting old snapshot: $old_snap"
+        btrfs subvolume delete "$old_snap"
+    done
+fi
+```
+CHMOD it:
+
+```bash
+sudo chmod +x /usr/local/bin/daily-data-snapshot
 ```
 
 Test it:
 
 ```bash
-sudo btrfs-snapshot-data
+sudo daily-data-snapshot
 ls /data/.snapshots/
 ```
 
-### Create systemd timer for daily snapshots
+### Create systemd timer and service for daily snapshots
 
 ```bash
-sudo tee /etc/systemd/system/btrfs-snapshot-data.service > /dev/null << 'EOF'
+# Service
+sudo nano /etc/systemd/system/btrfs-snap.service
+
 [Unit]
-Description=Btrfs snapshot of /data
+Description=Daily Btrfs Snapshot
+Requires=data.mount
+After=data.mount
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/btrfs-snapshot-data
-EOF
+ExecStart=/usr/local/bin/btrfs-daily-snap.sh
+# Runs the script with lower priority so it doesn't slow down the PC
+Nice=19
+IOSchedulingClass=idle
 
-sudo tee /etc/systemd/system/btrfs-snapshot-data.timer > /dev/null << 'EOF'
+# Timer
+sudo nano /etc/systemd/system/btrfs-snap.timer
 [Unit]
-Description=Daily Btrfs snapshot of /data
+Description=Run Btrfs Snapshot Daily
 
 [Timer]
+# Run every day at 12:00 AM
 OnCalendar=daily
-AccuracySec=1h
-RandomizedDelaySec=30min
+# If the PC was off at midnight, run it immediately on boot
 Persistent=true
 
 [Install]
 WantedBy=timers.target
-EOF
 
+# Enable timer
 sudo systemctl daemon-reload
-sudo systemctl enable --now btrfs-snapshot-data.timer
-```
+sudo systemctl enable --now btrfs-snap.timer
 
-Verify the timer is active:
-
-```bash
+# Verify timer is active
 systemctl list-timers btrfs-snapshot-data.timer
 ```
 
