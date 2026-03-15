@@ -39,7 +39,7 @@ tailscale ip -4
 tailscale status --self --json | grep -oP '"DNSName"\s*:\s*"\K[^"]+' | sed 's/\.$//'
 ```
 
-Note these values — referred to as `<st_ip_v4>` and `<full_mask` below.
+Note these values — referred to as `<TS_IP>` and `<FQDN>` below.
 
 ## 2. Update /etc/hosts
 
@@ -55,7 +55,7 @@ ff00::0     ip6-mcastprefix
 ff02::1     ip6-allnodes
 ff02::2     ip6-allrouters
 
-<ts_ip_v4>     <full_mask> <HOSTNAME>
+<TS_IP>     <FQDN> <HOSTNAME>
 ```
 
 ## 3. Create media group and pre-create arr service accounts
@@ -98,10 +98,10 @@ sudo passwd --lock qbt
 
 ```bash
 git clone https://aur.archlinux.org/paru-git.git /tmp/paru-git
-&& cd /tmp/paru-git
-&& makepkg -si --noconfirm
-&& cd -
-&& rm -rf /tmp/paru-git
+cd /tmp/paru-git
+makepkg -si --noconfirm
+cd -
+rm -rf /tmp/paru-git
 ```
 
 ## 6. Install Sonarr, Radarr, Prowlarr (AUR)
@@ -264,8 +264,252 @@ All services are accessible from any device on your Tailscale network using the 
 | Radarr       | `http://<TS_IP>:7878`       |
 | Prowlarr     | `http://<TS_IP>:9696`       |
 | Plex         | `http://<TS_IP>:32400/web`  |
+| autobrr      | `http://<TS_IP>:7474`       |
 
-## 14. Set up Btrfs data SSD
+## 14. Install and configure cross-seed
+
+cross-seed automatically finds matching torrents across your indexers based on your existing library and injects them into qBittorrent for cross-seeding. It runs as a headless daemon (API-only on port 2468, no web UI).
+
+Create a system user for cross-seed:
+
+```bash
+sudo useradd --system --home-dir /var/lib/cross-seed --shell /usr/bin/nologin --gid media crossseed
+sudo passwd --lock crossseed
+sudo mkdir -p /var/lib/cross-seed
+sudo chown crossseed:media /var/lib/cross-seed
+sudo chmod 750 /var/lib/cross-seed
+```
+
+**Run as your normal user — do NOT use sudo:**
+
+```bash
+paru -S nodejs-cross-seed
+```
+
+Generate the default configuration:
+
+```bash
+sudo -u crossseed -H cross-seed gen-config
+```
+
+This creates `/var/lib/cross-seed/.cross-seed/config.js`. Edit it to connect to qBittorrent and your Torznab indexers (from Prowlarr):
+
+```bash
+sudo nano /var/lib/cross-seed/.cross-seed/config.js
+```
+
+Key settings to configure:
+
+| Setting | Example value |
+|---------|---------------|
+| `torrentClients` | `["qbittorrent:http://user:pass@localhost:8080"]` |
+| `torznab` | `["http://localhost:9696/1/api?apikey=YOUR_KEY", ...]` (copy from Prowlarr under each indexer) |
+| `linkDirs` | `["/media/downloads/complete"]` (optional, enables hardlinking) |
+
+Refer to the [cross-seed docs](https://cross-seed.org/docs/basics/getting-started) for all available options. If you skip `linkDirs`, cross-seed will tell you which config values to adjust.
+
+Create the systemd service:
+
+```bash
+sudo nano /etc/systemd/system/cross-seed.service
+
+[Unit]
+Description=cross-seed daemon
+After=network-online.target
+
+[Service]
+Type=simple
+User=crossseed
+Group=media
+Environment=HOME=/var/lib/cross-seed
+ExecStart=/usr/bin/cross-seed daemon
+Restart=on-failure
+RestartSec=10
+UMask=002
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now cross-seed
+systemctl status cross-seed
+```
+
+Check logs with:
+
+```bash
+sudo journalctl -u cross-seed -f
+```
+
+## 15. Install and configure autobrr
+
+autobrr monitors IRC announce channels and RSS feeds to automatically grab new releases and push them to qBittorrent. It provides a web UI on port 7474.
+
+Create a system user for autobrr:
+
+```bash
+sudo useradd --system --home-dir /var/lib/autobrr --shell /usr/bin/nologin --gid media autobrr
+sudo passwd --lock autobrr
+sudo mkdir -p /var/lib/autobrr
+sudo chown autobrr:media /var/lib/autobrr
+sudo chmod 750 /var/lib/autobrr
+```
+
+**Run as your normal user — do NOT use sudo:**
+
+```bash
+paru -S autobrr
+```
+
+Pre-create the config so autobrr listens on all interfaces (needed for Tailscale access). First generate a random session secret:
+
+```bash
+head /dev/urandom | tr -dc A-Za-z0-9 | head -c32; echo
+```
+
+Copy the output, then create the config:
+
+```bash
+sudo nano /var/lib/autobrr/config.toml
+
+host = "0.0.0.0"
+port = 7474
+sessionSecret = "<paste your generated secret>"
+```
+
+Create the systemd service:
+
+```bash
+sudo nano /etc/systemd/system/autobrr.service
+
+[Unit]
+Description=autobrr service
+After=network-online.target
+
+[Service]
+Type=simple
+User=autobrr
+Group=media
+ExecStart=/usr/bin/autobrr --config=/var/lib/autobrr
+Restart=on-failure
+RestartSec=10
+UMask=002
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now autobrr
+systemctl status autobrr
+```
+
+Visit `http://<TS_IP>:7474` to create your initial admin account. Under Settings > Download Clients, add qBittorrent at `http://localhost:8080`.
+
+## 16. Set up Caddy for HTTPS (optional)
+
+Caddy acts as a reverse proxy with automatic HTTPS using Tailscale-issued certificates. This eliminates browser security warnings and enables secure-context browser features (clipboard, service workers, etc.). Traffic over Tailscale is already encrypted via WireGuard — Caddy adds a second TLS layer that the browser recognises as secure.
+
+Since Caddy 2.5+, it natively fetches certificates from the local Tailscale daemon for `*.ts.net` domains with no manual certificate management.
+
+Plex handles its own TLS certificates (via `plex.direct`), and cross-seed has no web UI, so neither needs Caddy.
+
+### Install Caddy
+
+```bash
+sudo pacman -S caddy
+```
+
+### Grant Caddy permission to fetch Tailscale certificates
+
+Caddy runs as the `caddy` user, which needs access to the Tailscale daemon socket to request certificates. Add the following line to the tailscaled environment file:
+
+```bash
+sudo nano /etc/default/tailscaled
+
+TS_PERMIT_CERT_UID=caddy
+```
+
+Restart the Tailscale daemon to pick up the change:
+
+```bash
+sudo systemctl restart tailscaled
+```
+
+### Enable HTTPS certificates in your tailnet
+
+In the [Tailscale admin console](https://login.tailscale.com/admin/dns), make sure **HTTPS Certificates** is enabled under DNS settings. This allows machines to request Let's Encrypt certificates for their `*.ts.net` hostnames.
+
+### Configure the Caddyfile
+
+Replace `<FQDN>` below with your machine's full Tailscale hostname (e.g., `nas.tailnet-name.ts.net`). Get it with:
+
+```bash
+tailscale status --self --json | grep -oP '"DNSName"\s*:\s*"\K[^"]+' | sed 's/\.$//'
+```
+
+Edit the Caddyfile:
+
+```bash
+sudo nano /etc/caddy/Caddyfile
+
+<FQDN>:10443 {
+    reverse_proxy 127.0.0.1:8080
+}
+
+<FQDN>:10444 {
+    reverse_proxy 127.0.0.1:8989
+}
+
+<FQDN>:10445 {
+    reverse_proxy 127.0.0.1:7878
+}
+
+<FQDN>:10446 {
+    reverse_proxy 127.0.0.1:9696
+}
+
+<FQDN>:10447 {
+    reverse_proxy 127.0.0.1:7474
+}
+```
+
+### Start Caddy
+
+```bash
+sudo systemctl enable --now caddy
+systemctl status caddy
+```
+
+Caddy automatically fetches a Tailscale certificate on the first HTTPS request to each port. Certificates are valid for 90 days and renew automatically.
+
+Check logs if anything goes wrong:
+
+```bash
+sudo journalctl -u caddy -f
+```
+
+### HTTPS access
+
+| Service     | HTTPS URL                               |
+|-------------|-----------------------------------------|
+| qBittorrent | `https://<FQDN>:10443`                 |
+| Sonarr      | `https://<FQDN>:10444`                 |
+| Radarr      | `https://<FQDN>:10445`                 |
+| Prowlarr    | `https://<FQDN>:10446`                 |
+| autobrr     | `https://<FQDN>:10447`                 |
+| Plex        | `https://<FQDN>:32400/web` (own TLS)   |
+
+The HTTP URLs from step 13 continue to work alongside HTTPS. To enforce HTTPS-only, bind each service to `127.0.0.1` in its own settings so it is only reachable through Caddy.
+
+## 17. Set up Btrfs data SSD
 
 This sets up a single 2.5" SSD at `/data` with a subvolume layout that supports incremental backups via `btrfs send/receive` when a second SSD is added later.
 
@@ -304,13 +548,13 @@ sudo umount /mnt/tmp_root
 sudo mkdir -p /data
 
 # Mount the @data subvolume
-sudo mount -o subvol=@data /dev/sda /data
+sudo mount -o noatime,compress=zstd:1,subvol=@data /dev/sda /data
 
 # Inside your data subvolume, create a folder to access your snapshots
 sudo mkdir -p /data/.snapshots
 
 # Mount the @snapshots subvolume into that folder
-sudo mount -o subvol=@snapshots /dev/sda /data/.snapshots
+sudo mount -o noatime,compress=zstd:1,subvol=@snapshots /dev/sda /data/.snapshots
 ```
 
 ### Add to fstab
@@ -376,13 +620,13 @@ fi
 CHMOD it:
 
 ```bash
-sudo chmod +x /usr/local/bin/daily-data-snapshot
+sudo chmod +x /usr/local/bin/daily-data-snapshot.sh
 ```
 
 Test it:
 
 ```bash
-sudo daily-data-snapshot
+sudo /usr/local/bin/daily-data-snapshot.sh
 ls /data/.snapshots/
 ```
 
@@ -427,7 +671,7 @@ sudo systemctl enable --now daily-data-snapshot.timer
 systemctl list-timers daily-data-snapshot.timer
 ```
 
-## 15. (Future) Add backup SSD with btrfs send/receive
+## 18. (Future) Add backup SSD with btrfs send/receive
 
 When the second SSD arrives, format it, do an initial full send, then incremental sends going forward.
 
@@ -453,8 +697,9 @@ sudo rmdir /mnt/temp
 ### Mount the backup drive
 
 ```bash
-sudo mkdir -p /backup /backup/.snapshots
+sudo mkdir -p /backup
 sudo mount -o noatime,compress=zstd:1,subvol=@data LABEL=databackup /backup
+sudo mkdir -p /backup/.snapshots
 sudo mount -o noatime,compress=zstd:1,subvol=@snapshots LABEL=databackup /backup/.snapshots
 ```
 
