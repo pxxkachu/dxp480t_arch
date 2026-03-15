@@ -321,9 +321,12 @@ sudo rmdir /mnt/temp
 
 ### Mount subvolumes
 
+Mount `@data` first, create the `.snapshots` directory inside it, then mount `@snapshots` over it:
+
 ```bash
-sudo mkdir -p /data /data/.snapshots
+sudo mkdir -p /data
 sudo mount -o noatime,compress=zstd:1,subvol=@data LABEL=data /data
+sudo mkdir -p /data/.snapshots
 sudo mount -o noatime,compress=zstd:1,subvol=@snapshots LABEL=data /data/.snapshots
 ```
 
@@ -338,7 +341,7 @@ LABEL=data  /data/.snapshots  btrfs  noatime,compress=zstd:1,subvol=@snapshots  
 FSTAB
 ```
 
-Verify:
+Verify fstab works (the `.snapshots` dir persists inside `@data` so `mount -a` will find it):
 
 ```bash
 sudo umount /data/.snapshots
