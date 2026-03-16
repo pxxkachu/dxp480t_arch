@@ -167,6 +167,9 @@ The package ships a template service (`qbittorrent-nox@.service`). The instance 
 sudo mkdir -p /etc/systemd/system/qbittorrent-nox@qbt.service.d
 sudo nano /etc/systemd/system/qbittorrent-nox@qbt.service.d/override.conf
 
+[Unit]
+Description=qBittorrent
+
 [Service]
 Group=media
 UMask=002
@@ -178,6 +181,9 @@ UMask=002
 sudo mkdir -p /etc/systemd/system/sonarr.service.d
 sudo nano /etc/systemd/system/sonarr.service.d/override.conf
 
+[Unit]
+Description=Sonarr
+
 [Service]
 Group=media
 UMask=002
@@ -187,6 +193,9 @@ UMask=002
 sudo mkdir -p /etc/systemd/system/radarr.service.d
 sudo nano /etc/systemd/system/radarr.service.d/override.conf
 
+[Unit]
+Description=Radarr
+
 [Service]
 Group=media
 UMask=002
@@ -195,6 +204,9 @@ UMask=002
 ```bash
 sudo mkdir -p /etc/systemd/system/prowlarr.service.d
 sudo nano /etc/systemd/system/prowlarr.service.d/override.conf
+
+[Unit]
+Description=Prowlarr
 
 [Service]
 Group=media
@@ -314,7 +326,7 @@ Create the systemd service:
 sudo nano /etc/systemd/system/cross-seed.service
 
 [Unit]
-Description=cross-seed daemon
+Description=Cross-seed
 After=network-online.target
 
 [Service]
@@ -387,7 +399,7 @@ Create the systemd service:
 sudo nano /etc/systemd/system/autobrr.service
 
 [Unit]
-Description=autobrr service
+Description=Autobrr
 After=network-online.target
 
 [Service]
