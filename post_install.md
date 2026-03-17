@@ -1,6 +1,6 @@
 # Post-Install: Arch NAS (UGREEN DXP480T Plus)
 
-Headless media server setup with qBittorrent, Sonarr, Radarr, Prowlarr, and Tailscale Serve (HTTPS reverse proxy).
+Headless media server setup with qBittorrent, Sonarr, Radarr, Prowlarr, Recyclarr, and Tailscale Serve (HTTPS reverse proxy).
 
 All commands include `sudo` where needed — copy and paste directly into your terminal as your normal user. Steps 5 and 6 **must not** use sudo (AUR packages must be built as a normal user).
 
@@ -167,9 +167,6 @@ The package ships a template service (`qbittorrent-nox@.service`). The instance 
 sudo mkdir -p /etc/systemd/system/qbittorrent-nox@qbt.service.d
 sudo nano /etc/systemd/system/qbittorrent-nox@qbt.service.d/override.conf
 
-[Unit]
-Description=qBittorrent
-
 [Service]
 Group=media
 UMask=002
@@ -181,9 +178,6 @@ UMask=002
 sudo mkdir -p /etc/systemd/system/sonarr.service.d
 sudo nano /etc/systemd/system/sonarr.service.d/override.conf
 
-[Unit]
-Description=Sonarr
-
 [Service]
 Group=media
 UMask=002
@@ -193,9 +187,6 @@ UMask=002
 sudo mkdir -p /etc/systemd/system/radarr.service.d
 sudo nano /etc/systemd/system/radarr.service.d/override.conf
 
-[Unit]
-Description=Radarr
-
 [Service]
 Group=media
 UMask=002
@@ -204,9 +195,6 @@ UMask=002
 ```bash
 sudo mkdir -p /etc/systemd/system/prowlarr.service.d
 sudo nano /etc/systemd/system/prowlarr.service.d/override.conf
-
-[Unit]
-Description=Prowlarr
 
 [Service]
 Group=media
@@ -326,7 +314,7 @@ Create the systemd service:
 sudo nano /etc/systemd/system/cross-seed.service
 
 [Unit]
-Description=Cross-seed
+Description=cross-seed daemon
 After=network-online.target
 
 [Service]
@@ -399,7 +387,7 @@ Create the systemd service:
 sudo nano /etc/systemd/system/autobrr.service
 
 [Unit]
-Description=Autobrr
+Description=autobrr service
 After=network-online.target
 
 [Service]
@@ -425,7 +413,142 @@ systemctl status autobrr
 
 Visit `http://<TS_IP>:7474` to create your initial admin account. Under Settings > Download Clients, add qBittorrent at `http://localhost:8080`.
 
-## 16. Set up Caddy for HTTPS (optional)
+## 16. Install and configure Recyclarr
+
+Recyclarr automatically syncs TRaSH Guide quality profiles, custom formats, and media naming settings to Sonarr and Radarr. It runs as a periodic one-shot via a systemd timer (no web UI).
+
+Create a system user for Recyclarr:
+
+```bash
+sudo useradd --system --home-dir /var/lib/recyclarr --shell /usr/bin/nologin --gid media recyclarr
+sudo passwd --lock recyclarr
+sudo mkdir -p /var/lib/recyclarr
+sudo chown recyclarr:media /var/lib/recyclarr
+sudo chmod 750 /var/lib/recyclarr
+```
+
+**Run as your normal user — do NOT use sudo:**
+
+```bash
+paru -S recyclarr-bin
+```
+
+List available TRaSH Guide quality profile templates:
+
+```bash
+sudo -u recyclarr RECYCLARR_APP_DATA=/var/lib/recyclarr recyclarr config list templates
+```
+
+Generate config files from templates. Pick the profiles that match your setup (e.g., `hd-bluray-web` for 1080p movies, `web-1080p` for TV):
+
+```bash
+sudo -u recyclarr RECYCLARR_APP_DATA=/var/lib/recyclarr recyclarr config create --template hd-bluray-web
+sudo -u recyclarr RECYCLARR_APP_DATA=/var/lib/recyclarr recyclarr config create --template web-1080p
+```
+
+This creates config files in `/var/lib/recyclarr/configs/`. Edit each one with your instance URL and API key (Settings → General → Security in Sonarr/Radarr):
+
+```bash
+sudo nano /var/lib/recyclarr/configs/hd-bluray-web.yml
+```
+
+Update `base_url` and `api_key`:
+
+```yaml
+radarr:
+  hd-bluray-web:
+    base_url: http://localhost:7878
+    api_key: <your_radarr_api_key>
+    delete_old_custom_formats: true
+```
+
+```bash
+sudo nano /var/lib/recyclarr/configs/web-1080p.yml
+```
+
+```yaml
+sonarr:
+  web-1080p:
+    base_url: http://localhost:8989
+    api_key: <your_sonarr_api_key>
+    delete_old_custom_formats: true
+```
+
+Optionally, store API keys in a secrets file:
+
+```bash
+sudo nano /var/lib/recyclarr/secrets.yml
+
+radarr_url: http://localhost:7878
+radarr_apikey: <your_radarr_api_key>
+sonarr_url: http://localhost:8989
+sonarr_apikey: <your_sonarr_api_key>
+```
+
+Then reference them in config files with `!secret radarr_url`, `!secret radarr_apikey`, etc.
+
+Fix ownership after editing configs (nano runs as root via sudo):
+
+```bash
+sudo chown -R recyclarr:media /var/lib/recyclarr
+```
+
+Run the first sync to import TRaSH Guide settings:
+
+```bash
+sudo -u recyclarr RECYCLARR_APP_DATA=/var/lib/recyclarr recyclarr sync
+```
+
+Verify in Sonarr/Radarr under Settings → Custom Formats and Settings → Profiles that the new quality profiles and custom formats appear.
+
+Create the systemd service and timer for daily syncs:
+
+```bash
+sudo nano /etc/systemd/system/recyclarr.service
+
+[Unit]
+Description=Recyclarr TRaSH Guides sync
+After=network-online.target sonarr.service radarr.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=recyclarr
+Group=media
+Environment=RECYCLARR_APP_DATA=/var/lib/recyclarr
+ExecStart=/usr/bin/recyclarr sync
+```
+
+```bash
+sudo nano /etc/systemd/system/recyclarr.timer
+
+[Unit]
+Description=Run Recyclarr sync daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Start the timer:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now recyclarr.timer
+```
+
+Verify with:
+
+```bash
+systemctl list-timers recyclarr.timer
+sudo journalctl -u recyclarr.service
+```
+
+## 17. Set up Caddy for HTTPS (optional)
 
 Caddy acts as a reverse proxy with automatic HTTPS using Tailscale-issued certificates. This eliminates browser security warnings and enables secure-context browser features (clipboard, service workers, etc.). Traffic over Tailscale is already encrypted via WireGuard — Caddy adds a second TLS layer that the browser recognises as secure.
 
@@ -521,7 +644,7 @@ sudo journalctl -u caddy -f
 
 The HTTP URLs from step 13 continue to work alongside HTTPS. To enforce HTTPS-only, bind each service to `127.0.0.1` in its own settings so it is only reachable through Caddy.
 
-## 17. Set up Btrfs data SSD
+## 18. Set up Btrfs data SSD
 
 This sets up a single 2.5" SSD at `/data` with a subvolume layout that supports incremental backups via `btrfs send/receive` when a second SSD is added later.
 
@@ -683,7 +806,7 @@ sudo systemctl enable --now daily-data-snapshot.timer
 systemctl list-timers daily-data-snapshot.timer
 ```
 
-## 18. (Future) Add backup SSD with btrfs send/receive
+## 19. (Future) Add backup SSD with btrfs send/receive
 
 When the second SSD arrives, format it, do an initial full send, then incremental sends going forward.
 
