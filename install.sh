@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
+#
+# Run from the official Arch Linux live ISO, UEFI boot, as root.
+# This script DESTROYS all data on the disks you select (OS + data array).
+# BIOS: disable the hardware watchdog on UGREEN boxes when not running UGOS;
+# disable Secure Boot if enabled; use UEFI (not CSM/Legacy).
+# Ensure networking works (e.g. ping archlinux.org) before continuing.
+#
 set -euo pipefail
+shopt -s inherit_errexit 2>/dev/null || true
 
 # -----------------------------
 # Arch installer for UGREEN DXP480T Plus
 # - OS: ext4 on a user-selected NVMe/SATA disk
 # - Data: Btrfs RAID0 pool on user-selected disks
-# - Fully interactive — no config file needed
+# - Fully interactive — no config file
 # -----------------------------
 
 if [[ $EUID -ne 0 ]]; then
@@ -19,12 +27,19 @@ if [[ ! -d /sys/firmware/efi/efivars ]]; then
   exit 1
 fi
 
+export LC_ALL=C
+
 # ---- Cleanup trap ----
 cleanup() {
   echo "== Cleanup: unmounting filesystems =="
   umount -R /mnt 2>/dev/null || true
 }
 trap cleanup EXIT
+
+err_exit() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
 
 # ---- Helpers ----
 
@@ -46,6 +61,40 @@ need_cmd() {
   command -v "$cmd" >/dev/null 2>&1 || pacman -Sy --noconfirm --needed "$pkg"
 }
 
+# True if any descendant block device currently has a non-empty MOUNTPOINT.
+disk_has_mounts() {
+  local disk="$1"
+  lsblk -n -o MOUNTPOINT "$disk" | awk 'NF { exit 0 } END { exit 1 }'
+}
+
+assert_whole_disk() {
+  local d="$1" t
+  [[ -b "$d" ]] || err_exit "Not a block device: $d"
+  t="$(lsblk -dn -o TYPE "$d" 2>/dev/null || true)"
+  [[ "$t" == "disk" ]] || err_exit "Expected a whole disk (not a partition): $d (lsblk TYPE=${t:-unknown})"
+}
+
+assert_disk_not_readonly() {
+  local d="$1"
+  if [[ "$(blockdev --getro "$d" 2>/dev/null || echo 0)" == "1" ]]; then
+    err_exit "Disk is read-only: $d"
+  fi
+}
+
+assert_partitions_exist() {
+  local p
+  for p in "$@"; do
+    [[ -b "$p" ]] || err_exit "Partition not found (kernel may need a moment): $p"
+  done
+}
+
+reread_partition_table() {
+  local d
+  for d in "$@"; do
+    blockdev --rereadpt "$d" 2>/dev/null || true
+  done
+}
+
 echo "== Ensuring required tools exist =="
 need_cmd pacstrap    arch-install-scripts
 need_cmd sgdisk      gptfdisk
@@ -53,6 +102,8 @@ need_cmd wipefs      util-linux
 need_cmd mkfs.fat    dosfstools
 need_cmd mkfs.ext4   e2fsprogs
 need_cmd mkfs.btrfs  btrfs-progs
+need_cmd lsblk       util-linux
+need_cmd blockdev    util-linux
 
 # Btrfs mount options (not prompted)
 MEDIA_MOUNT_OPTIONS="noatime,compress=zstd:1,space_cache=v2"
@@ -74,8 +125,7 @@ discover_disks() {
   done < <(lsblk -dpno NAME,SIZE,MODEL | grep -E '/dev/(sd|nvme|mmcblk)')
 
   if [[ ${#AVAILABLE_DISKS[@]} -eq 0 ]]; then
-    echo "ERROR: No disks found."
-    exit 1
+    err_exit "No disks found."
   fi
 }
 
@@ -137,8 +187,7 @@ for d in "${AVAILABLE_DISKS[@]}"; do
 done
 
 if [[ ${#REMAINING_DISKS[@]} -lt 2 ]]; then
-  echo "ERROR: Need at least 2 remaining disks for the data array, but only ${#REMAINING_DISKS[@]} available."
-  exit 1
+  err_exit "Need at least 2 remaining disks for the data array, but only ${#REMAINING_DISKS[@]} available."
 fi
 
 echo "== Available disks for data array (OS disk excluded) =="
@@ -238,6 +287,16 @@ while true; do
   echo "Invalid mount point. Must be an absolute path (start with /) with no spaces or special characters."
 done
 
+# ---- Pre-destructive checks ----
+TARGET_DISKS=("$OS_DISK" "${DATA_DISKS[@]}")
+for d in "${TARGET_DISKS[@]}"; do
+  assert_whole_disk "$d"
+  assert_disk_not_readonly "$d"
+  if disk_has_mounts "$d"; then
+    err_exit "Refusing to erase $d: one or more partitions are mounted. Unmount them first."
+  fi
+done
+
 # ---- Summary and confirmation ----
 echo ""
 echo "========================================"
@@ -280,6 +339,9 @@ sgdisk --zap-all "$OS_DISK"
 sgdisk -n 1:0:+"$EFI_SIZE" -t 1:ef00 -c 1:"EFI"  "$OS_DISK"
 sgdisk -n 2:0:0            -t 2:8300 -c 2:"ROOT" "$OS_DISK"
 wait_for_partitions
+reread_partition_table "$OS_DISK"
+wait_for_partitions
+assert_partitions_exist "$EFI_PART" "$ROOT_PART"
 
 echo "== Formatting OS partitions =="
 mkfs.fat -F32 "$EFI_PART"
@@ -298,6 +360,9 @@ for d in "${DATA_DISKS[@]}"; do
   DATA_PARTS+=("$(part "$d" 1)")
 done
 wait_for_partitions
+reread_partition_table "${DATA_DISKS[@]}"
+wait_for_partitions
+assert_partitions_exist "${DATA_PARTS[@]}"
 
 for p in "${DATA_PARTS[@]}"; do
   wipefs -af "$p"
@@ -320,9 +385,8 @@ mount -t btrfs -o "${MEDIA_MOUNT_OPTIONS},subvol=@snapshots" "LABEL=${MEDIA_LABE
 
 # ---- Base system ----
 echo "== Checking network connectivity =="
-if ! curl -s --connect-timeout 5 https://archlinux.org >/dev/null; then
-  echo "ERROR: No network. Verify connectivity before running this script."
-  exit 1
+if ! curl -fsS --connect-timeout 10 --max-time 30 https://archlinux.org >/dev/null; then
+  err_exit "No network. Verify connectivity before running this script."
 fi
 
 echo "== Selecting fastest mirrors =="
@@ -344,7 +408,7 @@ genfstab -U /mnt > /mnt/etc/fstab
 
 # ---- Chroot configuration ----
 echo "== Configuring system inside chroot =="
-arch-chroot /mnt /bin/bash -euo pipefail <<EOF
+if ! arch-chroot /mnt /bin/bash -euo pipefail <<EOF
 # Time and Locale
 ln -sf /usr/share/zoneinfo/${TIMEZONE} /etc/localtime
 hwclock --systohc
@@ -492,6 +556,9 @@ systemctl enable smartd
 systemctl enable systemd-timesyncd
 systemctl enable fstrim.timer
 EOF
+then
+  err_exit "arch-chroot configuration failed. See messages above. /mnt may still be mounted for inspection."
+fi
 
 # ---- Passwords (interactive with retry) ----
 set_passwd() {
