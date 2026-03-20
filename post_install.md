@@ -718,24 +718,47 @@ mountpoint /data/.snapshots
 sudo nano /usr/local/bin/daily-data-snapshot.sh
 
 #!/usr/bin/env bash
-# Strict mode: Exit on error, undefined vars, or pipe failures
 set -euo pipefail
 
 # CONFIGURATION
-SOURCE_SUBVOL="/data"
-SNAP_DIR="/data/.snapshots"
-# Naming with date for easy sorting and send/receive identification
+# Add your source and snapshot pairs to this associative array
+declare -A TARGETS=(
+    ["/data"]="/data/.snapshots"
+    ["/media"]="/media/.snapshots"
+)
+
 TIMESTAMP=$(date +%Y-%m-%d)
 KEEP=14
 
-# 1. Create a new read-only snapshot
-# Snapshots must be read-only (-r) to be used with 'btrfs send'
-if [ ! -d "${SNAP_DIR}/${TIMESTAMP}" ]; then
-    btrfs subvolume snapshot -r "$SOURCE_SUBVOL" "${SNAP_DIR}/${TIMESTAMP}"
-    echo "Created daily snapshot: ${TIMESTAMP}"
-else
-    echo "Snapshot for ${TIMESTAMP} already exists. Skipping."
-fi
+# Loop through each source directory
+for SOURCE_SUBVOL in "${!TARGETS[@]}"; do
+    SNAP_DIR="${TARGETS[$SOURCE_SUBVOL]}"
+    
+    echo "--- Processing: $SOURCE_SUBVOL ---"
+
+    # 1. Create a new read-only snapshot
+    if [ ! -d "${SNAP_DIR}/${TIMESTAMP}" ]; then
+        # Ensure the snapshot directory exists
+        mkdir -p "$SNAP_DIR"
+        btrfs subvolume snapshot -r "$SOURCE_SUBVOL" "${SNAP_DIR}/${TIMESTAMP}"
+        echo "Created daily snapshot for $SOURCE_SUBVOL: ${TIMESTAMP}"
+    else
+        echo "Snapshot for ${TIMESTAMP} already exists on $SOURCE_SUBVOL. Skipping."
+    fi
+
+    # 2. Cleanup old snapshots
+    mapfile -t ALL_SNAPS < <(ls -1d "${SNAP_DIR}"/20* 2>/dev/null | sort)
+
+    if (( ${#ALL_SNAPS[@]} > KEEP )); then
+        NUM_TO_DELETE=$(( ${#ALL_SNAPS[@]} - KEEP ))
+        DELETION_LIST=("${ALL_SNAPS[@]:0:NUM_TO_DELETE}")
+        
+        for old_snap in "${DELETION_LIST[@]}"; do
+            echo "Deleting old snapshot: $old_snap"
+            btrfs subvolume delete "$old_snap"
+        done
+    fi
+done
 
 # 2. Cleanup old snapshots
 # List snapshots in the directory, sort them, and identify which to delete
