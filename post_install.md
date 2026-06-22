@@ -1,6 +1,6 @@
 # Post-Install: Arch NAS (UGREEN DXP480T Plus)
 
-Headless media server setup with qBittorrent, Sonarr, Radarr, Prowlarr, Recyclarr, and Tailscale Serve (HTTPS reverse proxy).
+Headless media server setup with qBittorrent, Sonarr, Radarr, Prowlarr, Unpackerr, and Tailscale.
 
 All commands include `sudo` where needed — copy and paste directly into your terminal as your normal user. Steps 5 and 6 **must not** use sudo (AUR packages must be built as a normal user).
 
@@ -264,7 +264,6 @@ All services are accessible from any device on your Tailscale network using the 
 | Radarr       | `http://<TS_IP>:7878`       |
 | Prowlarr     | `http://<TS_IP>:9696`       |
 | Plex         | `http://<TS_IP>:32400/web`  |
-| autobrr      | `http://<TS_IP>:7474`       |
 
 ## 14. Install and configure cross-seed
 
@@ -345,306 +344,74 @@ Check logs with:
 sudo journalctl -u cross-seed -f
 ```
 
-## 15. Install and configure autobrr
+## 15. Install and configure Unpackerr
 
-autobrr monitors IRC announce channels and RSS feeds to automatically grab new releases and push them to qBittorrent. It provides a web UI on port 7474.
-
-Create a system user for autobrr:
-
-```bash
-sudo useradd --system --home-dir /var/lib/autobrr --shell /usr/bin/nologin --gid media autobrr
-sudo passwd --lock autobrr
-sudo mkdir -p /var/lib/autobrr
-sudo chown autobrr:media /var/lib/autobrr
-sudo chmod 750 /var/lib/autobrr
-```
+[Unpackerr](https://unpackerr.zip/) watches qBittorrent-completed downloads that Sonarr/Radarr are waiting on and **extracts archives** (RAR, zip, etc.) in place so the *arr* apps can import the unpacked files. It has **no web UI** (optional Prometheus metrics on `5656` if enabled in config). It uses each app’s download queue over HTTP API—use the Sonarr and Radarr API keys from Settings → General → Security in each app.
 
 **Run as your normal user — do NOT use sudo:**
 
 ```bash
-paru -S autobrr
+paru -S unpackerr
 ```
 
-Pre-create the config so autobrr listens on all interfaces (needed for Tailscale access). First generate a random session secret:
+The AUR package creates the `unpackerr` user, installs `/usr/bin/unpackerr`, and ships `/etc/unpackerr/unpackerr.conf` (backup file on upgrades). Add the user to the `media` group and create the log directory expected by the vendor systemd unit (`UN_LOG_FILE=/var/log/unpackerr/unpackerr.log`):
 
 ```bash
-head /dev/urandom | tr -dc A-Za-z0-9 | head -c32; echo
+sudo usermod -aG media unpackerr
+sudo mkdir -p /var/log/unpackerr
+sudo chown unpackerr:media /var/log/unpackerr
+sudo chmod 775 /var/log/unpackerr
 ```
 
-Copy the output, then create the config:
+Add a drop-in override so the service runs with group `media` and `umask` 002 (same pattern as Sonarr/Radarr), and starts after qBittorrent and the *arr* apps:
 
 ```bash
-sudo nano /var/lib/autobrr/config.toml
-
-host = "0.0.0.0"
-port = 7474
-sessionSecret = "<paste your generated secret>"
-```
-
-Create the systemd service:
-
-```bash
-sudo nano /etc/systemd/system/autobrr.service
+sudo mkdir -p /etc/systemd/system/unpackerr.service.d
+sudo nano /etc/systemd/system/unpackerr.service.d/override.conf
 
 [Unit]
-Description=autobrr service
-After=network-online.target
+Description=Unpackerr
+After=network-online.target qbittorrent-nox@qbt.service sonarr.service radarr.service
 
 [Service]
-Type=simple
-User=autobrr
 Group=media
-ExecStart=/usr/bin/autobrr --config=/var/lib/autobrr
-Restart=on-failure
-RestartSec=10
 UMask=002
-
-[Install]
-WantedBy=multi-user.target
 ```
+
+Edit the main config and uncomment **`url`**, **`api_key`**, and **`paths`** inside each `[[sonarr]]` and `[[radarr]]` block you use (comment out or remove unused Starr blocks to avoid startup warnings):
+
+```bash
+sudo nano /etc/unpackerr/unpackerr.conf
+```
+
+| Setting | Value |
+|---------|--------|
+| `[[sonarr]]` → `url` | `http://127.0.0.1:8989` |
+| `[[sonarr]]` → `api_key` | Sonarr → Settings → General → Security |
+| `[[sonarr]]` → `paths` | `['/media/downloads/complete']` (fallback if the path from the API is not visible to unpackerr) |
+| `[[radarr]]` → `url` | `http://127.0.0.1:7878` |
+| `[[radarr]]` → `api_key` | Radarr → Settings → General → Security |
+| `[[radarr]]` → `paths` | `['/media/downloads/complete']` |
+
+Keep `protocols` at the default for torrent-only; if you use Usenet, add `usenet,UsenetDownloadProtocol` as described in the file comments. For torrents, do **not** enable `delete_orig` unless you understand the implications (see upstream docs).
 
 Start the service:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now autobrr
-systemctl status autobrr
+sudo systemctl enable --now unpackerr
+systemctl status unpackerr
 ```
 
-Visit `http://<TS_IP>:7474` to create your initial admin account. Under Settings > Download Clients, add qBittorrent at `http://localhost:8080`.
-
-## 16. Install and configure Recyclarr
-
-Recyclarr automatically syncs TRaSH Guide quality profiles, custom formats, and media naming settings to Sonarr and Radarr. It runs as a periodic one-shot via a systemd timer (no web UI).
-
-Create a system user for Recyclarr:
+Follow logs:
 
 ```bash
-sudo useradd --system --home-dir /var/lib/recyclarr --shell /usr/bin/nologin --gid media recyclarr
-sudo passwd --lock recyclarr
-sudo mkdir -p /var/lib/recyclarr
-sudo chown recyclarr:media /var/lib/recyclarr
-sudo chmod 750 /var/lib/recyclarr
+sudo journalctl -u unpackerr -f
 ```
 
-**Run as your normal user — do NOT use sudo:**
+Reference: [Unpackerr configuration](https://unpackerr.zip/docs/install/configuration/).
 
-```bash
-paru -S recyclarr-bin
-```
-
-List available TRaSH Guide quality profile templates:
-
-```bash
-sudo -u recyclarr RECYCLARR_APP_DATA=/var/lib/recyclarr recyclarr config list templates
-```
-
-Generate config files from templates. Pick the profiles that match your setup (e.g., `hd-bluray-web` for 1080p movies, `web-1080p` for TV):
-
-```bash
-sudo -u recyclarr RECYCLARR_APP_DATA=/var/lib/recyclarr recyclarr config create --template hd-bluray-web
-sudo -u recyclarr RECYCLARR_APP_DATA=/var/lib/recyclarr recyclarr config create --template web-1080p
-```
-
-This creates config files in `/var/lib/recyclarr/configs/`. Edit each one with your instance URL and API key (Settings → General → Security in Sonarr/Radarr):
-
-```bash
-sudo nano /var/lib/recyclarr/configs/hd-bluray-web.yml
-```
-
-Update `base_url` and `api_key`:
-
-```yaml
-radarr:
-  hd-bluray-web:
-    base_url: http://localhost:7878
-    api_key: <your_radarr_api_key>
-    delete_old_custom_formats: true
-```
-
-```bash
-sudo nano /var/lib/recyclarr/configs/web-1080p.yml
-```
-
-```yaml
-sonarr:
-  web-1080p:
-    base_url: http://localhost:8989
-    api_key: <your_sonarr_api_key>
-    delete_old_custom_formats: true
-```
-
-Optionally, store API keys in a secrets file:
-
-```bash
-sudo nano /var/lib/recyclarr/secrets.yml
-
-radarr_url: http://localhost:7878
-radarr_apikey: <your_radarr_api_key>
-sonarr_url: http://localhost:8989
-sonarr_apikey: <your_sonarr_api_key>
-```
-
-Then reference them in config files with `!secret radarr_url`, `!secret radarr_apikey`, etc.
-
-Fix ownership after editing configs (nano runs as root via sudo):
-
-```bash
-sudo chown -R recyclarr:media /var/lib/recyclarr
-```
-
-Run the first sync to import TRaSH Guide settings:
-
-```bash
-sudo -u recyclarr RECYCLARR_APP_DATA=/var/lib/recyclarr recyclarr sync
-```
-
-Verify in Sonarr/Radarr under Settings → Custom Formats and Settings → Profiles that the new quality profiles and custom formats appear.
-
-Create the systemd service and timer for daily syncs:
-
-```bash
-sudo nano /etc/systemd/system/recyclarr.service
-
-[Unit]
-Description=Recyclarr TRaSH Guides sync
-After=network-online.target sonarr.service radarr.service
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-User=recyclarr
-Group=media
-Environment=RECYCLARR_APP_DATA=/var/lib/recyclarr
-ExecStart=/usr/bin/recyclarr sync
-```
-
-```bash
-sudo nano /etc/systemd/system/recyclarr.timer
-
-[Unit]
-Description=Run Recyclarr sync daily
-
-[Timer]
-OnCalendar=daily
-RandomizedDelaySec=1h
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-```
-
-Start the timer:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now recyclarr.timer
-```
-
-Verify with:
-
-```bash
-systemctl list-timers recyclarr.timer
-sudo journalctl -u recyclarr.service
-```
-
-## 17. Set up Caddy for HTTPS (optional)
-
-Caddy acts as a reverse proxy with automatic HTTPS using Tailscale-issued certificates. This eliminates browser security warnings and enables secure-context browser features (clipboard, service workers, etc.). Traffic over Tailscale is already encrypted via WireGuard — Caddy adds a second TLS layer that the browser recognises as secure.
-
-Since Caddy 2.5+, it natively fetches certificates from the local Tailscale daemon for `*.ts.net` domains with no manual certificate management.
-
-Plex handles its own TLS certificates (via `plex.direct`), and cross-seed has no web UI, so neither needs Caddy.
-
-### Install Caddy
-
-```bash
-sudo pacman -S caddy
-```
-
-### Grant Caddy permission to fetch Tailscale certificates
-
-Caddy runs as the `caddy` user, which needs access to the Tailscale daemon socket to request certificates. Add the following line to the tailscaled environment file:
-
-```bash
-sudo nano /etc/default/tailscaled
-
-TS_PERMIT_CERT_UID=caddy
-```
-
-Restart the Tailscale daemon to pick up the change:
-
-```bash
-sudo systemctl restart tailscaled
-```
-
-### Enable HTTPS certificates in your tailnet
-
-In the [Tailscale admin console](https://login.tailscale.com/admin/dns), make sure **HTTPS Certificates** is enabled under DNS settings. This allows machines to request Let's Encrypt certificates for their `*.ts.net` hostnames.
-
-### Configure the Caddyfile
-
-Replace `<FQDN>` below with your machine's full Tailscale hostname (e.g., `nas.tailnet-name.ts.net`). Get it with:
-
-```bash
-tailscale status --self --json | grep -oP '"DNSName"\s*:\s*"\K[^"]+' | sed 's/\.$//'
-```
-
-Edit the Caddyfile:
-
-```bash
-sudo nano /etc/caddy/Caddyfile
-
-<FQDN>:10443 {
-    reverse_proxy 127.0.0.1:8080
-}
-
-<FQDN>:10444 {
-    reverse_proxy 127.0.0.1:8989
-}
-
-<FQDN>:10445 {
-    reverse_proxy 127.0.0.1:7878
-}
-
-<FQDN>:10446 {
-    reverse_proxy 127.0.0.1:9696
-}
-
-<FQDN>:10447 {
-    reverse_proxy 127.0.0.1:7474
-}
-```
-
-### Start Caddy
-
-```bash
-sudo systemctl enable --now caddy
-systemctl status caddy
-```
-
-Caddy automatically fetches a Tailscale certificate on the first HTTPS request to each port. Certificates are valid for 90 days and renew automatically.
-
-Check logs if anything goes wrong:
-
-```bash
-sudo journalctl -u caddy -f
-```
-
-### HTTPS access
-
-| Service     | HTTPS URL                               |
-|-------------|-----------------------------------------|
-| qBittorrent | `https://<FQDN>:10443`                 |
-| Sonarr      | `https://<FQDN>:10444`                 |
-| Radarr      | `https://<FQDN>:10445`                 |
-| Prowlarr    | `https://<FQDN>:10446`                 |
-| autobrr     | `https://<FQDN>:10447`                 |
-| Plex        | `https://<FQDN>:32400/web` (own TLS)   |
-
-The HTTP URLs from step 13 continue to work alongside HTTPS. To enforce HTTPS-only, bind each service to `127.0.0.1` in its own settings so it is only reachable through Caddy.
-
-## 18. Set up Btrfs data SSD
+## 16. Set up Btrfs data SSD
 
 This sets up a single 2.5" SSD at `/data` with a subvolume layout that supports incremental backups via `btrfs send/receive` when a second SSD is added later.
 
@@ -714,51 +481,34 @@ mountpoint /data/.snapshots
 
 ### Create snapshot script
 
+For the **`/media`** Btrfs pool (see pre-flight checks), keep daily read-only snapshots under `/media/.snapshots` on the **same filesystem** as `/media`. Create the directory if needed:
+
+```bash
+sudo mkdir -p /media/.snapshots
+```
+
 ```bash
 sudo nano /usr/local/bin/daily-data-snapshot.sh
 
 #!/usr/bin/env bash
+# Strict mode: Exit on error, undefined vars, or pipe failures
 set -euo pipefail
 
-# CONFIGURATION
-# Add your source and snapshot pairs to this associative array
-declare -A TARGETS=(
-    ["/data"]="/data/.snapshots"
-    ["/media"]="/media/.snapshots"
-)
-
+# CONFIGURATION — /media RAID pool only (not /data)
+SOURCE_SUBVOL="/media"
+SNAP_DIR="/media/.snapshots"
+# Naming with date for easy sorting and send/receive identification
 TIMESTAMP=$(date +%Y-%m-%d)
 KEEP=14
 
-# Loop through each source directory
-for SOURCE_SUBVOL in "${!TARGETS[@]}"; do
-    SNAP_DIR="${TARGETS[$SOURCE_SUBVOL]}"
-    
-    echo "--- Processing: $SOURCE_SUBVOL ---"
-
-    # 1. Create a new read-only snapshot
-    if [ ! -d "${SNAP_DIR}/${TIMESTAMP}" ]; then
-        # Ensure the snapshot directory exists
-        mkdir -p "$SNAP_DIR"
-        btrfs subvolume snapshot -r "$SOURCE_SUBVOL" "${SNAP_DIR}/${TIMESTAMP}"
-        echo "Created daily snapshot for $SOURCE_SUBVOL: ${TIMESTAMP}"
-    else
-        echo "Snapshot for ${TIMESTAMP} already exists on $SOURCE_SUBVOL. Skipping."
-    fi
-
-    # 2. Cleanup old snapshots
-    mapfile -t ALL_SNAPS < <(ls -1d "${SNAP_DIR}"/20* 2>/dev/null | sort)
-
-    if (( ${#ALL_SNAPS[@]} > KEEP )); then
-        NUM_TO_DELETE=$(( ${#ALL_SNAPS[@]} - KEEP ))
-        DELETION_LIST=("${ALL_SNAPS[@]:0:NUM_TO_DELETE}")
-        
-        for old_snap in "${DELETION_LIST[@]}"; do
-            echo "Deleting old snapshot: $old_snap"
-            btrfs subvolume delete "$old_snap"
-        done
-    fi
-done
+# 1. Create a new read-only snapshot
+# Snapshots must be read-only (-r) to be used with 'btrfs send'
+if [ ! -d "${SNAP_DIR}/${TIMESTAMP}" ]; then
+    btrfs subvolume snapshot -r "$SOURCE_SUBVOL" "${SNAP_DIR}/${TIMESTAMP}"
+    echo "Created daily snapshot: ${TIMESTAMP}"
+else
+    echo "Snapshot for ${TIMESTAMP} already exists. Skipping."
+fi
 
 # 2. Cleanup old snapshots
 # List snapshots in the directory, sort them, and identify which to delete
@@ -785,7 +535,7 @@ Test it:
 
 ```bash
 sudo /usr/local/bin/daily-data-snapshot.sh
-ls /data/.snapshots/
+ls /media/.snapshots/
 ```
 
 ### Create systemd timer and service for daily snapshots
@@ -795,9 +545,9 @@ ls /data/.snapshots/
 sudo nano /etc/systemd/system/daily-data-snapshot.service
 
 [Unit]
-Description=Daily Data Snapshot
-Requires=data.mount
-After=data.mount
+Description=Daily /media snapshot
+Requires=media.mount
+After=media.mount
 
 [Service]
 Type=oneshot
@@ -810,7 +560,7 @@ IOSchedulingClass=idle
 sudo nano /etc/systemd/system/daily-data-snapshot.timer
 
 [Unit]
-Description=Create daily data snapshots
+Description=Create daily /media snapshots
 
 [Timer]
 # Run every day at 12:00 AM
@@ -829,9 +579,11 @@ sudo systemctl enable --now daily-data-snapshot.timer
 systemctl list-timers daily-data-snapshot.timer
 ```
 
-## 19. (Future) Add backup SSD with btrfs send/receive
+## 17. (Future) Add backup SSD with btrfs send/receive
 
 When the second SSD arrives, format it, do an initial full send, then incremental sends going forward.
+
+If daily snapshots are stored under **`/media/.snapshots`** (see the snapshot script above) rather than **`/data/.snapshots`**, use `/media/.snapshots` in place of `/data/.snapshots` in the commands below.
 
 ### Format and create matching subvolumes
 
