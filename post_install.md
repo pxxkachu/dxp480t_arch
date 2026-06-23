@@ -2,7 +2,7 @@
 
 Headless media server setup with qBittorrent, VueTorrent, Sonarr, Radarr, Prowlarr, Unpackerr, Plex, and Tailscale Serve (HTTPS remote access over your tailnet).
 
-All commands include `sudo` where needed — copy and paste directly into your terminal as your normal user. Steps 1 and 7 **must not** use sudo (AUR packages must be built as a normal user).
+All commands include `sudo` where needed — copy and paste directly into your terminal as your normal user. Steps 1 and 5 **must not** use sudo (AUR packages must be built as a normal user).
 
 ---
 
@@ -90,24 +90,58 @@ sudo passwd --lock prowlarr
 sudo passwd --lock plex
 ```
 
-## 5. Install qBittorrent
+## 5. Install Sonarr, Radarr, Prowlarr (AUR)
+
+**Run as your normal user — do NOT use sudo:**
+
+```bash
+paru -S --needed sonarr-bin radarr-bin prowlarr-bin
+```
+
+## 6. Add admin user to media group
+
+```bash
+sudo usermod -aG media admin
+```
+
+Log out and back in after this step for the group membership to take effect.
+
+## 7. Install qBittorrent, VueTorrent, and create service data directories
+
+### Install qBittorrent
 
 ```bash
 sudo pacman -S qbittorrent-nox
 ```
 
-The package creates a user called `qbt` via sysusers with home **`/var/lib/qbittorrent`**. Fix its primary group to `media`:
+The package creates user `qbt` and home **`/var/lib/qbittorrent`** via sysusers/tmpfiles. Fix its primary group and directory permissions for the `media` group:
 
 ```bash
 sudo usermod --gid media qbt
 sudo passwd --lock qbt
+sudo chown qbt:media /var/lib/qbittorrent
+sudo chmod 775 /var/lib/qbittorrent
 ```
 
-## 6. Install and configure VueTorrent
+### Create service data directories
+
+```bash
+sudo mkdir -p /var/lib/sonarr
+sudo chown sonarr:media /var/lib/sonarr
+sudo chmod 775 /var/lib/sonarr
+
+sudo mkdir -p /var/lib/radarr
+sudo chown radarr:media /var/lib/radarr
+sudo chmod 775 /var/lib/radarr
+
+sudo mkdir -p /var/lib/prowlarr
+sudo chown prowlarr:media /var/lib/prowlarr
+sudo chmod 775 /var/lib/prowlarr
+```
+
+### Install and configure VueTorrent
 
 [VueTorrent](https://github.com/VueTorrent/VueTorrent) replaces qBittorrent’s default Web UI. It is **not** a separate service — qbittorrent-nox serves it as the alternative Web UI from the same port (8080 / Tailscale Serve 9001).
-
-### Download VueTorrent
 
 Download the latest release into the `qbt` user’s home. The target directory must contain a `public/` subfolder ([upstream requirement](https://github.com/VueTorrent/VueTorrent/wiki/Installation)):
 
@@ -130,8 +164,6 @@ ls /var/lib/qbittorrent/vuetorrent/public
 If `public/` is missing, the zip layout may differ — unzip manually and copy the folder that contains `public/` and `version.txt` into `/var/lib/qbittorrent/vuetorrent/`.
 
 **Alternative (AUR):** `paru -S vuetorrent-bin` (paru installed in section 1). Prefer the manual install above: qBittorrent rejects symlinked alternative UI paths, and a plain directory copy is more reliable.
-
-### Enable alternative Web UI
 
 Set this in qBittorrent’s config **before** the first service start (or edit after qBittorrent has run once):
 
@@ -158,43 +190,7 @@ sudo systemctl restart qbittorrent-nox@qbt
 
 If you see *“Unacceptable file type, only regular file is allowed”*, the path is wrong (usually pointing at `public/` instead of its parent) or contains symlinks.
 
-## 7. Install Sonarr, Radarr, Prowlarr (AUR)
-
-**Run as your normal user — do NOT use sudo:**
-
-```bash
-paru -S --needed sonarr-bin radarr-bin prowlarr-bin
-```
-
-## 8. Add admin user to media group
-
-```bash
-sudo usermod -aG media admin
-```
-
-Log out and back in after this step for the group membership to take effect.
-
-## 9. Create service data directories
-
-```bash
-sudo mkdir -p /var/lib/qbittorrent
-sudo chown qbt:media /var/lib/qbittorrent
-sudo chmod 775 /var/lib/qbittorrent
-
-sudo mkdir -p /var/lib/sonarr
-sudo chown sonarr:media /var/lib/sonarr
-sudo chmod 775 /var/lib/sonarr
-
-sudo mkdir -p /var/lib/radarr
-sudo chown radarr:media /var/lib/radarr
-sudo chmod 775 /var/lib/radarr
-
-sudo mkdir -p /var/lib/prowlarr
-sudo chown prowlarr:media /var/lib/prowlarr
-sudo chmod 775 /var/lib/prowlarr
-```
-
-## 10. Create media directories
+## 8. Create media directories
 
 ```bash
 sudo mkdir -p /media/downloads/{pending,complete,torrents}
@@ -209,7 +205,7 @@ sudo chmod 2775 /media/downloads /media/downloads/pending /media/downloads/compl
 
 The setgid bit (2775) ensures new files inherit the `media` group regardless of which service creates them.
 
-## 11. Configure systemd services
+## 9. Configure systemd services
 
 All packages ship their own service files. Use drop-in overrides to set the group and umask without replacing the vendor units — package updates flow through automatically.
 
@@ -255,7 +251,7 @@ Group=media
 UMask=002
 ```
 
-## 12. Install and configure Plex Media Server
+## 10. Install and configure Plex Media Server
 
 **Run as your normal user — do NOT use sudo:**
 
@@ -288,7 +284,7 @@ Group=media
 UMask=002
 ```
 
-## 13. Start all services
+## 11. Start all services
 
 ```bash
 sudo systemctl daemon-reload
@@ -307,42 +303,7 @@ Get qBittorrent's initial admin password from its journal:
 sudo journalctl -u qbittorrent-nox@qbt -n 20 | grep -i password
 ```
 
-## 14. Remote access
-
-Services are reachable from any device on your Tailscale tailnet. Use **HTTPS via Tailscale Serve** (section 15) for day-to-day remote access. Direct HTTP on `<TS_IP>` remains available until you bind apps to `127.0.0.1` in section 15.
-
-### HTTPS via Tailscale Serve (recommended — after section 15)
-
-| Service     | URL |
-|-------------|-----|
-| qBittorrent | `https://kintoun.peacock-pomfret.ts.net:9001` |
-| Sonarr      | `https://kintoun.peacock-pomfret.ts.net:9002` |
-| Radarr      | `https://kintoun.peacock-pomfret.ts.net:9003` |
-| Prowlarr    | `https://kintoun.peacock-pomfret.ts.net:9004` |
-
-Plex and cross-seed are not proxied through Serve (see below).
-
-### Plex (direct)
-
-| Access | URL |
-|--------|-----|
-| Web UI | `http://kintoun.peacock-pomfret.ts.net:32400/web` |
-| Fallback | `http://<TS_IP>:32400/web` |
-
-Plex uses its own `*.plex.direct` TLS for apps; configure Network settings in section 15.
-
-### HTTP (direct — fallback before section 15)
-
-| Service     | URL |
-|-------------|-----|
-| qBittorrent | `http://<TS_IP>:8080` |
-| Sonarr      | `http://<TS_IP>:8989` |
-| Radarr      | `http://<TS_IP>:7878` |
-| Prowlarr    | `http://<TS_IP>:9696` |
-
-cross-seed has no web UI.
-
-## 15. Configure Tailscale Serve
+## 12. Configure Tailscale Serve
 
 [Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve) reverse-proxies each web UI over HTTPS with automatically provisioned certificates on `kintoun.peacock-pomfret.ts.net`. Traffic stays on your tailnet — no router port forwarding and no extra reverse-proxy package.
 
@@ -412,7 +373,7 @@ WebUI\LocalHostAuth=false
 
 Equivalent Web UI (Options → Web UI): **IP address** `127.0.0.1`, disable **Host header validation**, **CSRF protection**, and **Secure cookie**; ensure **Bypass authentication for clients on localhost** is off.
 
-**VueTorrent:** configured in section 6 — same origin as qBittorrent; no separate backend URL.
+**VueTorrent:** configured in section 7 — same origin as qBittorrent; no separate backend URL.
 
 Start qBittorrent, clear browser cookies for `kintoun.peacock-pomfret.ts.net`, then test in a private window:
 
@@ -472,7 +433,44 @@ Plex is not proxied through Serve. For Plex mobile and TV apps over Tailscale, o
 | Custom server access URLs | `http://kintoun.peacock-pomfret.ts.net:32400` |
 | Enable Remote Access | **Off** (Tailscale replaces public port forwarding) |
 
-## 16. Install and configure cross-seed
+## 13. Remote access
+
+Services are reachable from any device on your Tailscale tailnet. After completing section 12, use the HTTPS URLs below for day-to-day remote access.
+
+### HTTPS via Tailscale Serve (recommended)
+
+| Service     | URL |
+|-------------|-----|
+| qBittorrent | `https://kintoun.peacock-pomfret.ts.net:9001` |
+| Sonarr      | `https://kintoun.peacock-pomfret.ts.net:9002` |
+| Radarr      | `https://kintoun.peacock-pomfret.ts.net:9003` |
+| Prowlarr    | `https://kintoun.peacock-pomfret.ts.net:9004` |
+
+Plex and cross-seed are not proxied through Serve (see below).
+
+### Plex (direct)
+
+| Access | URL |
+|--------|-----|
+| Web UI | `http://kintoun.peacock-pomfret.ts.net:32400/web` |
+| Fallback | `http://<TS_IP>:32400/web` |
+
+Plex uses its own `*.plex.direct` TLS for apps; Network settings are in section 12.
+
+### HTTP (direct — fallback)
+
+Use these if Serve is not configured or for troubleshooting (e.g. before binding apps to `127.0.0.1` in section 12):
+
+| Service     | URL |
+|-------------|-----|
+| qBittorrent | `http://<TS_IP>:8080` |
+| Sonarr      | `http://<TS_IP>:8989` |
+| Radarr      | `http://<TS_IP>:7878` |
+| Prowlarr    | `http://<TS_IP>:9696` |
+
+cross-seed has no web UI.
+
+## 14. Install and configure cross-seed
 
 cross-seed automatically finds matching torrents across your indexers based on your existing library and injects them into qBittorrent for cross-seeding. It runs as a headless daemon (API-only on port 2468, no web UI).
 
@@ -551,7 +549,7 @@ Check logs with:
 sudo journalctl -u cross-seed -f
 ```
 
-## 17. Install and configure Unpackerr
+## 15. Install and configure Unpackerr
 
 [Unpackerr](https://unpackerr.zip/) watches qBittorrent-completed downloads that Sonarr/Radarr are waiting on and **extracts archives** (RAR, zip, etc.) in place so the *arr* apps can import the unpacked files. It has **no web UI** (optional Prometheus metrics on `5656` if enabled in config). It uses each app’s download queue over HTTP API—use the Sonarr and Radarr API keys from Settings → General → Security in each app.
 
@@ -618,7 +616,7 @@ sudo journalctl -u unpackerr -f
 
 Reference: [Unpackerr configuration](https://unpackerr.zip/docs/install/configuration/).
 
-## 18. Set up Btrfs data SSD
+## 16. Set up Btrfs data SSD
 
 This sets up a single 2.5" SSD at `/data` with a subvolume layout that supports incremental backups via `btrfs send/receive` when a second SSD is added later.
 
@@ -786,7 +784,7 @@ sudo systemctl enable --now daily-data-snapshot.timer
 systemctl list-timers daily-data-snapshot.timer
 ```
 
-## 19. (Future) Add backup SSD with btrfs send/receive
+## 17. (Future) Add backup SSD with btrfs send/receive
 
 When the second SSD arrives, format it, do an initial full send, then incremental sends going forward.
 
