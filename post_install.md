@@ -1,6 +1,6 @@
 # Post-Install: Arch NAS (UGREEN DXP480T Plus)
 
-Headless media server setup with qBittorrent, VueTorrent, Sonarr, Radarr, Prowlarr, Unpackerr, Plex, and Tailscale Serve (HTTPS remote access over your tailnet).
+Headless media server setup with qBittorrent, VueTorrent, Qui, Sonarr, Radarr, Prowlarr, Unpackerr, Plex, and Tailscale (remote access over your tailnet).
 
 All commands include `sudo` where needed — copy and paste directly into your terminal as your normal user. Steps 1 and 5 **must not** use sudo (AUR packages must be built as a normal user).
 
@@ -8,14 +8,18 @@ All commands include `sudo` where needed — copy and paste directly into your t
 
 ## 1. Install paru (AUR helper)
 
+Builds a tagged release once with `makepkg`, linked against your installed `pacman` / `libalpm`. `install.sh` already installs `base-devel`, `go`, and `git`; the first build also pulls `cargo` (Rust) as a make dependency.
+
+Avoid **`paru-bin`** on a rolling system: its prebuilt binary is tied to a specific `libalpm.so` soname and can break after a `pacman` upgrade (`libalpm.so.15: cannot open shared object file`). Use **`paru`** or **`paru-git`** instead — both compile against whatever `libalpm` you have.
+
 **Run as your normal user — do NOT use sudo:**
 
 ```bash
-git clone https://aur.archlinux.org/paru-git.git /tmp/paru-git
-cd /tmp/paru-git
+git clone https://aur.archlinux.org/paru.git /tmp/paru
+cd /tmp/paru
 makepkg -si --noconfirm
 cd -
-rm -rf /tmp/paru-git
+rm -rf /tmp/paru
 ```
 
 ## 2. Install and authenticate Tailscale
@@ -77,17 +81,21 @@ Create the shared media group:
 sudo groupadd media
 ```
 
-Create sonarr, radarr, and prowlarr accounts **before** installing their AUR packages. The AUR packages ship sysusers files that auto-create these accounts with their own default groups. Pre-creating them with primary group `media` prevents that — sysusers skips users that already exist.
+Create sonarr, radarr, prowlarr, plex, autobrr, and qui accounts **before** installing their AUR packages. The AUR packages ship sysusers files that auto-create these accounts with their own default groups. Pre-creating them with primary group `media` prevents that — sysusers skips users that already exist.
 
 ```bash
 sudo useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media sonarr
 sudo useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media radarr
 sudo useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media prowlarr
 sudo useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media plex
+sudo useradd --system --no-create-home --home-dir /var/lib/autobrr --shell /usr/bin/nologin --gid media autobrr
+sudo useradd --system --no-create-home --home-dir /var/lib/qui --shell /usr/bin/nologin --gid media qui
 sudo passwd --lock sonarr
 sudo passwd --lock radarr
 sudo passwd --lock prowlarr
 sudo passwd --lock plex
+sudo passwd --lock autobrr
+sudo passwd --lock qui
 ```
 
 ## 5. Install Sonarr, Radarr, Prowlarr (AUR)
@@ -137,31 +145,39 @@ sudo chmod 775 /var/lib/radarr
 sudo mkdir -p /var/lib/prowlarr
 sudo chown prowlarr:media /var/lib/prowlarr
 sudo chmod 775 /var/lib/prowlarr
+
+sudo mkdir -p /var/lib/autobrr
+sudo chown autobrr:media /var/lib/autobrr
+sudo chmod 775 /var/lib/autobrr
+
+sudo mkdir -p /var/lib/qui
+sudo chown qui:media /var/lib/qui
+sudo chmod 775 /var/lib/qui
 ```
 
 ### Install and configure VueTorrent
 
-[VueTorrent](https://github.com/VueTorrent/VueTorrent) replaces qBittorrent’s default Web UI. It is **not** a separate service — qbittorrent-nox serves it as the alternative Web UI from the same port (8080 / Tailscale Serve 9001).
+[VueTorrent](https://github.com/VueTorrent/VueTorrent) replaces qBittorrent’s default Web UI. It is **not** a separate service — qbittorrent-nox serves it as the alternative Web UI from the same port (8080).
 
 Download the latest release into the `qbt` user’s home. The target directory must contain a `public/` subfolder ([upstream requirement](https://github.com/VueTorrent/VueTorrent/wiki/Installation)):
 
 ```bash
-sudo mkdir -p /var/lib/qbittorrent/vuetorrent
+sudo mkdir -p /var/lib/qbittorrent/VueTorrent
 cd /tmp
 curl -sL https://github.com/VueTorrent/VueTorrent/releases/latest/download/vuetorrent.zip -o vuetorrent.zip
 unzip -o vuetorrent.zip
-sudo cp -a vuetorrent/. /var/lib/qbittorrent/vuetorrent/
-rm -rf vuetorrent vuetorrent.zip
-sudo chown -R qbt:media /var/lib/qbittorrent/vuetorrent
+sudo cp -a VueTorrent/. /var/lib/qbittorrent/VueTorrent/
+rm -rf VueTorrent vuetorrent.zip
+sudo chown -R qbt:media /var/lib/qbittorrent/VueTorrent
 ```
 
 Verify:
 
 ```bash
-ls /var/lib/qbittorrent/vuetorrent/public
+ls /var/lib/qbittorrent/VueTorrent/public
 ```
 
-If `public/` is missing, the zip layout may differ — unzip manually and copy the folder that contains `public/` and `version.txt` into `/var/lib/qbittorrent/vuetorrent/`.
+If `public/` is missing, the zip layout may differ — unzip manually and copy the folder that contains `public/` and `version.txt` into `/var/lib/qbittorrent/VueTorrent/`.
 
 **Alternative (AUR):** `paru -S vuetorrent-bin` (paru installed in section 1). Prefer the manual install above: qBittorrent rejects symlinked alternative UI paths, and a plain directory copy is more reliable.
 
@@ -175,12 +191,12 @@ sudo nano /var/lib/qbittorrent/.config/qBittorrent/qBittorrent.conf
 ```ini
 [Preferences]
 WebUI\AlternativeUIEnabled=true
-WebUI\RootFolder=/var/lib/qbittorrent/vuetorrent
+WebUI\RootFolder=/var/lib/qbittorrent/VueTorrent
 ```
 
 `RootFolder` must be the directory **containing** `public/` — not the `public` folder itself.
 
-Equivalent Web UI path: Options → Web UI → enable **Use alternative Web UI**, set **Files location** to `/var/lib/qbittorrent/vuetorrent`.
+Equivalent Web UI path: Options → Web UI → enable **Use alternative Web UI**, set **Files location** to `/var/lib/qbittorrent/VueTorrent`.
 
 If qBittorrent is already running, restart after changes:
 
@@ -303,251 +319,213 @@ Get qBittorrent's initial admin password from its journal:
 sudo journalctl -u qbittorrent-nox@qbt -n 20 | grep -i password
 ```
 
-## 12. Configure Tailscale Serve
+## 12. Remote access
 
-[Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve) reverse-proxies each web UI over HTTPS with automatically provisioned certificates on `kintoun.peacock-pomfret.ts.net`. Traffic stays on your tailnet — no router port forwarding and no extra reverse-proxy package.
+Services are reachable from any device on your Tailscale tailnet. Traffic is encrypted by WireGuard; web UIs use HTTP on their default ports.
 
-Use **one HTTPS port per service** (not path-based routing). Ports **9001–9004** map to qBittorrent → Sonarr → Radarr → Prowlarr in order. The *arr* apps and qBittorrent are single-page apps; path routing breaks asset loading.
+| Service     | URL |
+|-------------|-----|
+| qBittorrent / VueTorrent | `http://kintoun.peacock-pomfret.ts.net:8080` |
+| autobrr     | `http://kintoun.peacock-pomfret.ts.net:7474` (section 13) |
+| Qui         | `http://kintoun.peacock-pomfret.ts.net:7476` (section 14) |
+| Sonarr      | `http://kintoun.peacock-pomfret.ts.net:8989` |
+| Radarr      | `http://kintoun.peacock-pomfret.ts.net:7878` |
+| Prowlarr    | `http://kintoun.peacock-pomfret.ts.net:9696` |
+| Plex        | `http://kintoun.peacock-pomfret.ts.net:32400/web` |
 
-Plex and cross-seed are excluded: Plex uses its own certificates; cross-seed has no web UI.
+Fallback if MagicDNS is unavailable — replace `<TS_IP>` with the output of `tailscale ip -4`:
 
-### Enable HTTPS certificates
-
-In the [Tailscale admin console](https://login.tailscale.com/admin/dns), enable **HTTPS Certificates** under DNS settings.
-
-### Bind web UIs to localhost
-
-Restrict each app to `127.0.0.1` so it is only reachable through Tailscale Serve (or local inter-service calls on the NAS). Configure each app **before** running the `tailscale serve` commands below.
-
-| App | Where to set bind address |
-|-----|---------------------------|
-| qBittorrent | Web UI → Options → Web UI → **IP address**: `127.0.0.1` |
-| Sonarr | Settings → General → **Bind Address**: `127.0.0.1` |
-| Radarr | Settings → General → **Bind Address**: `127.0.0.1` |
-| Prowlarr | Settings → General → **Bind Address**: `127.0.0.1` |
-
-Restart affected services after changing bind addresses:
-
-```bash
-sudo systemctl restart qbittorrent-nox@qbt sonarr radarr prowlarr
-```
-
-### qBittorrent behind Serve (required)
-
-qBittorrent enforces **Host header**, **CSRF**, and **cookie** checks that Sonarr/Radarr/Prowlarr do not. Tailscale Serve terminates HTTPS on port **9001** and forwards to **8080** — the browser sends `Host: kintoun.peacock-pomfret.ts.net:9001` while qBittorrent listens on **8080**. Unlike nginx, Serve cannot rewrite Host headers or mark session cookies `Secure`, so the default qBittorrent security settings often return `Unauthorized` (VueTorrent uses the same API).
-
-Stop qBittorrent before editing — a running instance will overwrite the config on exit:
-
-```bash
-sudo systemctl stop qbittorrent-nox@qbt
-getent passwd qbt    # confirm home directory
-sudo nano /var/lib/qbittorrent/.config/qBittorrent/qBittorrent.conf
-```
-
-If that file does not exist yet, start qBittorrent once to generate it, then stop and edit:
-
-```bash
-sudo systemctl start qbittorrent-nox@qbt
-sleep 3
-sudo systemctl stop qbittorrent-nox@qbt
-sudo find /var -name qBittorrent.conf 2>/dev/null
-```
-
-Use this **known-working block** for Tailscale Serve on a private tailnet (merge into `[Preferences]`; remove conflicting `WebUI\…` lines if present):
-
-```ini
-[Preferences]
-WebUI\Address=127.0.0.1
-WebUI\HostHeaderValidation=false
-WebUI\CSRFProtection=false
-WebUI\SecureCookie=false
-WebUI\LocalHostAuth=false
-```
-
-| Setting | Why |
-|---------|-----|
-| `HostHeaderValidation=false` | Serve uses port **9001** in the Host header; qBittorrent listens on **8080** — validation fails without this ([upstream issue](https://github.com/qbittorrent/qBittorrent/issues/23537)) |
-| `CSRFProtection=false` | Serve does not strip/normalize `Referer`/`Origin` like nginx; CSRF checks fail on API calls after the page loads |
-| `SecureCookie=false` | Serve terminates TLS; qBittorrent serves plain HTTP on localhost — session cookies do not stick without nginx’s `proxy_cookie_path … Secure` hack |
-| `LocalHostAuth=false` | Serve forwards to qBittorrent as `127.0.0.1`; `LocalHostAuth=true` can cause confusing auth behaviour through the proxy |
-
-Equivalent Web UI (Options → Web UI): **IP address** `127.0.0.1`, disable **Host header validation**, **CSRF protection**, and **Secure cookie**; ensure **Bypass authentication for clients on localhost** is off.
-
-**VueTorrent:** configured in section 7 — same origin as qBittorrent; no separate backend URL.
-
-Start qBittorrent, clear browser cookies for `kintoun.peacock-pomfret.ts.net`, then test in a private window:
-
-```bash
-sudo systemctl start qbittorrent-nox@qbt
-```
-
-Sanity check from another tailnet machine:
-
-```bash
-curl -sk https://kintoun.peacock-pomfret.ts.net:9001/api/v2/app/version
-```
-
-You should get a version string, not `Unauthorized`. If login is still required, open `https://kintoun.peacock-pomfret.ts.net:9001/` and sign in with the qBittorrent Web UI credentials (not VueTorrent-specific credentials).
-
-**Still broken?** Confirm Serve is proxying the right backend:
-
-```bash
-tailscale serve status
-curl -s http://127.0.0.1:8080/api/v2/app/version   # must work locally first
-```
-
-**Fallback:** skip Serve for qBittorrent and use `http://<TS_IP>:8080` over Tailscale (still encrypted by WireGuard). Keep Serve for the *arr* apps on 9002–9004.
-
-### Expose services with Serve
-
-Run each command once. The `--bg` flag keeps Serve running in the background and it resumes automatically after reboot.
-
-```bash
-sudo tailscale serve --bg --https=9001 http://127.0.0.1:8080 # qBittorrent
-sudo tailscale serve --bg --https=9002 http://127.0.0.1:8989 # Sonarr
-sudo tailscale serve --bg --https=9003 http://127.0.0.1:7878 # Radarr
-sudo tailscale serve --bg --https=9004 http://127.0.0.1:9696 # Prowlarr
-```
-
-Verify the configuration:
-
-```bash
-tailscale serve status
-```
-
-Tailscale Serve fetches a certificate on the first HTTPS request to each port. Certificates renew automatically.
-
-To remove all Serve routes:
-
-```bash
-sudo tailscale serve reset
-```
+| Service     | URL |
+|-------------|-----|
+| qBittorrent / VueTorrent | `http://<TS_IP>:8080` |
+| autobrr     | `http://<TS_IP>:7474` |
+| Qui         | `http://<TS_IP>:7476` |
+| Sonarr      | `http://<TS_IP>:8989` |
+| Radarr      | `http://<TS_IP>:7878` |
+| Prowlarr    | `http://<TS_IP>:9696` |
+| Plex        | `http://<TS_IP>:32400/web` |
 
 ### Plex network settings
 
-Plex is not proxied through Serve. For Plex mobile and TV apps over Tailscale, open the Plex web UI → **Settings** → **Network** and set:
+For Plex mobile and TV apps over Tailscale, open the Plex web UI → **Settings** → **Network** and set:
 
 | Setting | Value |
 |---------|--------|
 | Secure connections | **Preferred** (not Required — avoids cert errors with Tailscale IPs) |
 | Custom server access URLs | `http://kintoun.peacock-pomfret.ts.net:32400` |
-| Enable Remote Access | **Off** (Tailscale replaces public port forwarding) |
+| Enable Remote Access | **On** if Plex friends are not on your tailnet; **Off** if all viewers use Tailscale only |
 
-## 13. Remote access
+## 13. Install and configure autobrr
 
-Services are reachable from any device on your Tailscale tailnet. After completing section 12, use the HTTPS URLs below for day-to-day remote access.
+[autobrr](https://autobrr.com) monitors IRC announce channels and RSS feeds, matches releases against your filters, and sends grabs to qBittorrent and your *arr* apps. It sits between Prowlarr (indexers) and qBittorrent (downloads) in this stack. [Qui](https://getqui.com) (section 14) handles cross-seeding separately.
 
-### HTTPS via Tailscale Serve (recommended)
-
-| Service     | URL |
-|-------------|-----|
-| qBittorrent | `https://kintoun.peacock-pomfret.ts.net:9001` |
-| Sonarr      | `https://kintoun.peacock-pomfret.ts.net:9002` |
-| Radarr      | `https://kintoun.peacock-pomfret.ts.net:9003` |
-| Prowlarr    | `https://kintoun.peacock-pomfret.ts.net:9004` |
-
-Plex and cross-seed are not proxied through Serve (see below).
-
-### Plex (direct)
-
-| Access | URL |
-|--------|-----|
-| Web UI | `http://kintoun.peacock-pomfret.ts.net:32400/web` |
-| Fallback | `http://<TS_IP>:32400/web` |
-
-Plex uses its own `*.plex.direct` TLS for apps; Network settings are in section 12.
-
-### HTTP (direct — fallback)
-
-Use these if Serve is not configured or for troubleshooting (e.g. before binding apps to `127.0.0.1` in section 12):
-
-| Service     | URL |
-|-------------|-----|
-| qBittorrent | `http://<TS_IP>:8080` |
-| Sonarr      | `http://<TS_IP>:8989` |
-| Radarr      | `http://<TS_IP>:7878` |
-| Prowlarr    | `http://<TS_IP>:9696` |
-
-cross-seed has no web UI.
-
-## 14. Install and configure cross-seed
-
-cross-seed automatically finds matching torrents across your indexers based on your existing library and injects them into qBittorrent for cross-seeding. It runs as a headless daemon (API-only on port 2468, no web UI).
-
-Create a system user for cross-seed:
-
-```bash
-sudo useradd --system --home-dir /var/lib/cross-seed --shell /usr/bin/nologin --gid media crossseed
-sudo passwd --lock crossseed
-sudo mkdir -p /var/lib/cross-seed
-sudo chown crossseed:media /var/lib/cross-seed
-sudo chmod 750 /var/lib/cross-seed
-```
+The AUR package **`autobrr`** ships a systemd unit, sysusers, and tmpfiles. Config, SQLite database, and logs live under **`/var/lib/autobrr`**. The `autobrr` system user and that directory were pre-created in sections 4 and 7 with primary group `media`.
 
 **Run as your normal user — do NOT use sudo:**
 
 ```bash
-paru -S nodejs-cross-seed
+paru -S --needed autobrr
 ```
 
-Generate the default configuration:
+Confirm ownership after install (the package tmpfiles may reset permissions):
 
 ```bash
-sudo -u crossseed -H cross-seed gen-config
+sudo usermod --gid media autobrr
+sudo chown autobrr:media /var/lib/autobrr
+sudo chmod 775 /var/lib/autobrr
 ```
 
-This creates `/var/lib/cross-seed/.cross-seed/config.js`. Edit it to connect to qBittorrent and your Torznab indexers (from Prowlarr):
+### Generate config file
+
+The vendor unit passes `--config=/var/lib/autobrr`. Bootstrap `config.toml` and the SQLite database **before** enabling systemd — a cold start under the hardened unit can fail if the directory is empty:
 
 ```bash
-sudo nano /var/lib/cross-seed/.cross-seed/config.js
+sudo -u autobrr timeout --signal=TERM 15s /usr/bin/autobrr --config=/var/lib/autobrr || true
 ```
 
-Key settings to configure:
-
-| Setting | Example value |
-|---------|---------------|
-| `torrentClients` | `["qbittorrent:http://user:pass@localhost:8080"]` |
-| `torznab` | `["http://localhost:9696/1/api?apikey=YOUR_KEY", ...]` (copy from Prowlarr under each indexer) |
-| `linkDirs` | `["/media/downloads/complete"]` (optional, enables hardlinking) |
-
-Refer to the [cross-seed docs](https://cross-seed.org/docs/basics/getting-started) for all available options. If you skip `linkDirs`, cross-seed will tell you which config values to adjust.
-
-Create the systemd service:
+Verify:
 
 ```bash
-sudo nano /etc/systemd/system/cross-seed.service
+ls -la /var/lib/autobrr/config.toml /var/lib/autobrr/autobrr.db
+```
+
+`timeout` stopping the process with SIGTERM is expected. `AUTOBRR__HOST=0.0.0.0` in the drop-in below overrides the default `host = "127.0.0.1"` in `config.toml` for Tailscale access.
+
+### systemd drop-in override
+
+Run with group `media`, listen on all interfaces for Tailscale, and start after qBittorrent and the *arr* apps:
+
+```bash
+sudo mkdir -p /etc/systemd/system/autobrr.service.d
+sudo nano /etc/systemd/system/autobrr.service.d/override.conf
 
 [Unit]
-Description=cross-seed daemon
-After=network-online.target
+After=network-online.target qbittorrent-nox@qbt.service prowlarr.service sonarr.service radarr.service
 
 [Service]
-Type=simple
-User=crossseed
 Group=media
-Environment=HOME=/var/lib/cross-seed
-ExecStart=/usr/bin/cross-seed daemon
-Restart=on-failure
-RestartSec=10
 UMask=002
-
-[Install]
-WantedBy=multi-user.target
+Environment=AUTOBRR__HOST=0.0.0.0
 ```
 
-Start the service:
+The vendor unit already runs as user `autobrr` with `--config=/var/lib/autobrr`. `Group=media` and `UMask=002` match the other download-stack services.
+
+### Start autobrr
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now cross-seed
-systemctl status cross-seed
+sudo systemctl enable --now autobrr
+systemctl status autobrr
 ```
 
-Check logs with:
+### First-time web setup
+
+Open `http://kintoun.peacock-pomfret.ts.net:7474` (or `http://<TS_IP>:7474`) and create the autobrr admin account.
+
+Then in the autobrr UI:
+
+1. **Settings → Download clients** — add qBittorrent:
+   - Host: `http://127.0.0.1:8080`
+   - Username / password: qBittorrent Web UI credentials (from `journalctl` in section 11 if you have not changed them yet)
+2. **Settings → Feeds** — optional Torznab feeds from Prowlarr (copy URL + API key from Prowlarr → Indexers)
+3. **Settings → IRC** — connect to indexer announce channels ([autobrr IRC docs](https://autobrr.com/configuration/irc))
+4. **Filters** — create release filters that send matches to qBittorrent and notify Sonarr/Radarr
+
+Follow logs:
 
 ```bash
-sudo journalctl -u cross-seed -f
+sudo journalctl -u autobrr -f
 ```
+
+Reference: [autobrr configuration](https://autobrr.com/configuration/autobrr).
+
+## 14. Install and configure Qui
+
+[Qui](https://github.com/autobrr/qui) is a qBittorrent web UI from the [autobrr](https://autobrr.com) team. It replaces the standalone [cross-seed](https://cross-seed.org) daemon with a built-in cross-seed module (RSS automation, library scans, auto-search on completion, hardlinking) and runs as its own service on port **7476**. VueTorrent on port **8080** (section 7) can stay for direct qBittorrent Web UI access, or you can use Qui as your primary interface.
+
+The AUR package **`qui-bin`** ships a prebuilt Go binary (no Node.js), plus systemd, sysusers, and tmpfiles units. The `qui` system user and `/var/lib/qui` were pre-created in sections 4 and 7 with primary group `media`.
+
+**Run as your normal user — do NOT use sudo:**
+
+```bash
+paru -S --needed qui-bin
+```
+
+Confirm ownership after install (the package tmpfiles may reset permissions):
+
+```bash
+sudo usermod --gid media qui
+sudo chown qui:media /var/lib/qui
+sudo chmod 775 /var/lib/qui
+```
+
+### Generate config file
+
+The override below points `--config-dir` at `/var/lib/qui`. Create `config.toml` there **before** starting the service — `qui serve` expects that file (or a writable directory to create it), and systemd will fail on first boot if neither is in place:
+
+```bash
+sudo -u qui /usr/bin/qui generate-config --config-dir /var/lib/qui
+```
+
+Verify:
+
+```bash
+ls -la /var/lib/qui/config.toml
+```
+
+This command skips if `config.toml` already exists. `QUI__HOST=0.0.0.0` in the drop-in below still overrides the `host` value in the file for Tailscale access.
+
+### systemd drop-in override
+
+Store config and data directly under `/var/lib/qui` (same layout as Sonarr/Radarr), run with group `media`, listen on all interfaces for Tailscale, and start after qBittorrent:
+
+```bash
+sudo mkdir -p /etc/systemd/system/qui.service.d
+sudo nano /etc/systemd/system/qui.service.d/override.conf
+
+[Unit]
+After=network-online.target qbittorrent-nox@qbt.service
+
+[Service]
+Group=media
+UMask=002
+Environment=QUI__HOST=0.0.0.0
+ExecStart=
+ExecStart=/usr/bin/qui serve --config-dir /var/lib/qui --data-dir /var/lib/qui
+```
+
+`ExecStart=` clears the vendor line before setting a new one. `--config-dir` and `--data-dir` place `config.toml` and `qui.db` in `/var/lib/qui` instead of `~/.config/qui`.
+
+### Start Qui
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now qui
+systemctl status qui
+```
+
+### First-time web setup
+
+Open `http://kintoun.peacock-pomfret.ts.net:7476` (or `http://<TS_IP>:7476`) and create the Qui admin account.
+
+Then in the Qui UI:
+
+1. **Settings → qBittorrent instances** — add your instance:
+   - Host: `http://127.0.0.1:8080`
+   - Username / password: qBittorrent Web UI credentials (from `journalctl` in section 11 if you have not changed them yet)
+2. **Cross-Seed** — enable and configure per the [Qui cross-seed docs](https://getqui.com/docs/features/cross-seed/overview):
+   - Connect **Prowlarr** Torznab feeds (copy API URLs from Prowlarr → Indexers)
+   - Set **link directories** to `/media/downloads/complete` for hardlinking (requires `qui`/`media` group access to download paths — already set via setgid dirs in section 8)
+   - Enable **Auto-search on completion** and/or RSS automation as desired
+3. Optional: connect **Sonarr** / **Radarr** in Qui settings for season-pack assembly and tighter *arr* integration
+
+Follow logs:
+
+```bash
+sudo journalctl -u qui -f
+```
+
+Reference: [Qui documentation](https://getqui.com).
 
 ## 15. Install and configure Unpackerr
 
