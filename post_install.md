@@ -1,44 +1,10 @@
 # Post-Install: Arch NAS (UGREEN DXP480T Plus)
 
-Headless media server setup with qBittorrent, VueTorrent, Qui, Sonarr, Radarr, Prowlarr, Unpackerr, Plex, and Tailscale (remote access over your tailnet).
+Headless media server setup with qBittorrent, Sonarr, Radarr, Prowlarr, Recyclarr, and Tailscale Serve (HTTPS reverse proxy).
 
-All commands include `sudo` where needed — copy and paste directly into your terminal as your normal user. Steps 1 and 5 **must not** use sudo (AUR packages must be built as a normal user).
+All commands include `sudo` where needed — copy and paste directly into your terminal as your normal user. Steps 5 and 6 **must not** use sudo (AUR packages must be built as a normal user).
 
 ---
-
-## 1. Install paru (AUR helper)
-
-Builds a tagged release once with `makepkg`, linked against your installed `pacman` / `libalpm`. `install.sh` already installs `base-devel`, `go`, and `git`; the first build also pulls `cargo` (Rust) as a make dependency.
-
-Avoid **`paru-bin`** on a rolling system: its prebuilt binary is tied to a specific `libalpm.so` soname and can break after a `pacman` upgrade (`libalpm.so.15: cannot open shared object file`). Use **`paru`** or **`paru-git`** instead — both compile against whatever `libalpm` you have.
-
-**Run as your normal user — do NOT use sudo:**
-
-```bash
-git clone https://aur.archlinux.org/paru.git /tmp/paru
-cd /tmp/paru
-makepkg -si --noconfirm
-cd -
-rm -rf /tmp/paru
-```
-
-## 2. Install and authenticate Tailscale
-
-```bash
-sudo pacman -S tailscale
-sudo systemctl enable --now tailscaled
-sudo tailscale up
-```
-
-Follow the printed authentication link in a browser.
-
-This machine's Tailscale FQDN is **`kintoun.peacock-pomfret.ts.net`**. After authenticating, confirm the assigned IP:
-
-```bash
-tailscale ip -4
-```
-
-Note that value as `<TS_IP>` below (the IP can change; the FQDN is stable).
 
 ## Pre-flight checks
 
@@ -56,13 +22,32 @@ sudo mount -t btrfs LABEL=media /media
 
 ---
 
-## 3. Update /etc/hosts
+## 1. Install and authenticate Tailscale
+
+```bash
+sudo pacman -S tailscale
+sudo systemctl enable --now tailscaled
+sudo tailscale up
+```
+
+Follow the printed authentication link in a browser.
+
+After authenticating, get your Tailscale IP and FQDN:
+
+```bash
+tailscale ip -4
+tailscale status --self --json | grep -oP '"DNSName"\s*:\s*"\K[^"]+' | sed 's/\.$//'
+```
+
+Note these values — referred to as `<TS_IP>` and `<FQDN>` below.
+
+## 2. Update /etc/hosts
 
 ```bash
 sudo nano /etc/hosts
 
 127.0.0.1   localhost
-127.0.1.1   kintoun.localdomain kintoun
+127.0.1.1   <HOSTNAME>.localdomain <HOSTNAME>
 
 ::1         localhost ip6-localhost ip6-loopback
 fe00::0     ip6-localnet
@@ -70,10 +55,10 @@ ff00::0     ip6-mcastprefix
 ff02::1     ip6-allnodes
 ff02::2     ip6-allrouters
 
-<TS_IP>     kintoun.peacock-pomfret.ts.net kintoun
+<TS_IP>     <FQDN> <HOSTNAME>
 ```
 
-## 4. Create media group and pre-create arr service accounts
+## 3. Create media group and pre-create arr service accounts
 
 Create the shared media group:
 
@@ -81,24 +66,45 @@ Create the shared media group:
 sudo groupadd media
 ```
 
-Create sonarr, radarr, prowlarr, plex, autobrr, and qui accounts **before** installing their AUR packages. The AUR packages ship sysusers files that auto-create these accounts with their own default groups. Pre-creating them with primary group `media` prevents that — sysusers skips users that already exist.
+Create sonarr, radarr, and prowlarr accounts **before** installing their AUR packages. The AUR packages ship sysusers files that auto-create these accounts with their own default groups. Pre-creating them with primary group `media` prevents that — sysusers skips users that already exist.
 
 ```bash
 sudo useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media sonarr
 sudo useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media radarr
 sudo useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media prowlarr
 sudo useradd --system --no-create-home --home-dir /dev/null --shell /usr/bin/nologin --gid media plex
-sudo useradd --system --no-create-home --home-dir /var/lib/autobrr --shell /usr/bin/nologin --gid media autobrr
-sudo useradd --system --no-create-home --home-dir /var/lib/qui --shell /usr/bin/nologin --gid media qui
 sudo passwd --lock sonarr
 sudo passwd --lock radarr
 sudo passwd --lock prowlarr
 sudo passwd --lock plex
-sudo passwd --lock autobrr
-sudo passwd --lock qui
 ```
 
-## 5. Install Sonarr, Radarr, Prowlarr (AUR)
+## 4. Install qBittorrent
+
+```bash
+sudo pacman -S qbittorrent-nox
+```
+
+The package creates a user called `qbt` via sysusers. Fix its primary group to `media`:
+
+```bash
+sudo usermod --gid media qbt
+sudo passwd --lock qbt
+```
+
+## 5. Install paru (AUR helper)
+
+**Run as your normal user — do NOT use sudo:**
+
+```bash
+git clone https://aur.archlinux.org/paru-git.git /tmp/paru-git
+cd /tmp/paru-git
+makepkg -si --noconfirm
+cd -
+rm -rf /tmp/paru-git
+```
+
+## 6. Install Sonarr, Radarr, Prowlarr (AUR)
 
 **Run as your normal user — do NOT use sudo:**
 
@@ -106,7 +112,7 @@ sudo passwd --lock qui
 paru -S --needed sonarr-bin radarr-bin prowlarr-bin
 ```
 
-## 6. Add admin user to media group
+## 7. Add admin user to media group
 
 ```bash
 sudo usermod -aG media admin
@@ -114,26 +120,13 @@ sudo usermod -aG media admin
 
 Log out and back in after this step for the group membership to take effect.
 
-## 7. Install qBittorrent, VueTorrent, and create service data directories
-
-### Install qBittorrent
+## 8. Create service data directories
 
 ```bash
-sudo pacman -S qbittorrent-nox
-```
+sudo mkdir -p /var/lib/qbt
+sudo chown qbt:media /var/lib/qbt
+sudo chmod 775 /var/lib/qbt
 
-The package creates user `qbt` and home **`/var/lib/qbittorrent`** via sysusers/tmpfiles. Fix its primary group and directory permissions for the `media` group:
-
-```bash
-sudo usermod --gid media qbt
-sudo passwd --lock qbt
-sudo chown qbt:media /var/lib/qbittorrent
-sudo chmod 775 /var/lib/qbittorrent
-```
-
-### Create service data directories
-
-```bash
 sudo mkdir -p /var/lib/sonarr
 sudo chown sonarr:media /var/lib/sonarr
 sudo chmod 775 /var/lib/sonarr
@@ -145,68 +138,9 @@ sudo chmod 775 /var/lib/radarr
 sudo mkdir -p /var/lib/prowlarr
 sudo chown prowlarr:media /var/lib/prowlarr
 sudo chmod 775 /var/lib/prowlarr
-
-sudo mkdir -p /var/lib/autobrr
-sudo chown autobrr:media /var/lib/autobrr
-sudo chmod 775 /var/lib/autobrr
-
-sudo mkdir -p /var/lib/qui
-sudo chown qui:media /var/lib/qui
-sudo chmod 775 /var/lib/qui
 ```
 
-### Install and configure VueTorrent
-
-[VueTorrent](https://github.com/VueTorrent/VueTorrent) replaces qBittorrent’s default Web UI. It is **not** a separate service — qbittorrent-nox serves it as the alternative Web UI from the same port (8080).
-
-Download the latest release into the `qbt` user’s home. The target directory must contain a `public/` subfolder ([upstream requirement](https://github.com/VueTorrent/VueTorrent/wiki/Installation)):
-
-```bash
-sudo mkdir -p /var/lib/qbittorrent/VueTorrent
-cd /tmp
-curl -sL https://github.com/VueTorrent/VueTorrent/releases/latest/download/vuetorrent.zip -o vuetorrent.zip
-unzip -o vuetorrent.zip
-sudo cp -a VueTorrent/. /var/lib/qbittorrent/VueTorrent/
-rm -rf VueTorrent vuetorrent.zip
-sudo chown -R qbt:media /var/lib/qbittorrent/VueTorrent
-```
-
-Verify:
-
-```bash
-ls /var/lib/qbittorrent/VueTorrent/public
-```
-
-If `public/` is missing, the zip layout may differ — unzip manually and copy the folder that contains `public/` and `version.txt` into `/var/lib/qbittorrent/VueTorrent/`.
-
-**Alternative (AUR):** `paru -S vuetorrent-bin` (paru installed in section 1). Prefer the manual install above: qBittorrent rejects symlinked alternative UI paths, and a plain directory copy is more reliable.
-
-Set this in qBittorrent’s config **before** the first service start (or edit after qBittorrent has run once):
-
-```bash
-sudo mkdir -p /var/lib/qbittorrent/.config/qBittorrent
-sudo nano /var/lib/qbittorrent/.config/qBittorrent/qBittorrent.conf
-```
-
-```ini
-[Preferences]
-WebUI\AlternativeUIEnabled=true
-WebUI\RootFolder=/var/lib/qbittorrent/VueTorrent
-```
-
-`RootFolder` must be the directory **containing** `public/` — not the `public` folder itself.
-
-Equivalent Web UI path: Options → Web UI → enable **Use alternative Web UI**, set **Files location** to `/var/lib/qbittorrent/VueTorrent`.
-
-If qBittorrent is already running, restart after changes:
-
-```bash
-sudo systemctl restart qbittorrent-nox@qbt
-```
-
-If you see *“Unacceptable file type, only regular file is allowed”*, the path is wrong (usually pointing at `public/` instead of its parent) or contains symlinks.
-
-## 8. Create media directories
+## 9. Create media directories
 
 ```bash
 sudo mkdir -p /media/downloads/{pending,complete,torrents}
@@ -221,7 +155,7 @@ sudo chmod 2775 /media/downloads /media/downloads/pending /media/downloads/compl
 
 The setgid bit (2775) ensures new files inherit the `media` group regardless of which service creates them.
 
-## 9. Configure systemd services
+## 10. Configure systemd services
 
 All packages ship their own service files. Use drop-in overrides to set the group and umask without replacing the vendor units — package updates flow through automatically.
 
@@ -267,7 +201,7 @@ Group=media
 UMask=002
 ```
 
-## 10. Install and configure Plex Media Server
+## 11. Install and configure Plex Media Server
 
 **Run as your normal user — do NOT use sudo:**
 
@@ -300,7 +234,7 @@ Group=media
 UMask=002
 ```
 
-## 11. Start all services
+## 12. Start all services
 
 ```bash
 sudo systemctl daemon-reload
@@ -319,98 +253,157 @@ Get qBittorrent's initial admin password from its journal:
 sudo journalctl -u qbittorrent-nox@qbt -n 20 | grep -i password
 ```
 
-## 12. Remote access
+## 13. Access services
 
-Services are reachable from any device on your Tailscale tailnet. Traffic is encrypted by WireGuard; web UIs use HTTP on their default ports.
+All services are accessible from any device on your Tailscale network using the Tailscale IP:
 
-| Service     | URL |
-|-------------|-----|
-| qBittorrent / VueTorrent | `http://kintoun.peacock-pomfret.ts.net:8080` |
-| autobrr     | `http://kintoun.peacock-pomfret.ts.net:7474` (section 13) |
-| Qui         | `http://kintoun.peacock-pomfret.ts.net:7476` (section 14) |
-| Sonarr      | `http://kintoun.peacock-pomfret.ts.net:8989` |
-| Radarr      | `http://kintoun.peacock-pomfret.ts.net:7878` |
-| Prowlarr    | `http://kintoun.peacock-pomfret.ts.net:9696` |
-| Plex        | `http://kintoun.peacock-pomfret.ts.net:32400/web` |
+| Service      | URL                         |
+|--------------|-----------------------------|
+| qBittorrent  | `http://<TS_IP>:8080`       |
+| Sonarr       | `http://<TS_IP>:8989`       |
+| Radarr       | `http://<TS_IP>:7878`       |
+| Prowlarr     | `http://<TS_IP>:9696`       |
+| Plex         | `http://<TS_IP>:32400/web`  |
+| autobrr      | `http://<TS_IP>:7474`       |
 
-Fallback if MagicDNS is unavailable — replace `<TS_IP>` with the output of `tailscale ip -4`:
+## 14. Install and configure cross-seed
 
-| Service     | URL |
-|-------------|-----|
-| qBittorrent / VueTorrent | `http://<TS_IP>:8080` |
-| autobrr     | `http://<TS_IP>:7474` |
-| Qui         | `http://<TS_IP>:7476` |
-| Sonarr      | `http://<TS_IP>:8989` |
-| Radarr      | `http://<TS_IP>:7878` |
-| Prowlarr    | `http://<TS_IP>:9696` |
-| Plex        | `http://<TS_IP>:32400/web` |
+cross-seed automatically finds matching torrents across your indexers based on your existing library and injects them into qBittorrent for cross-seeding. It runs as a headless daemon (API-only on port 2468, no web UI).
 
-### Plex network settings
+Create a system user for cross-seed:
 
-For Plex mobile and TV apps over Tailscale, open the Plex web UI → **Settings** → **Network** and set:
-
-| Setting | Value |
-|---------|--------|
-| Secure connections | **Preferred** (not Required — avoids cert errors with Tailscale IPs) |
-| Custom server access URLs | `http://kintoun.peacock-pomfret.ts.net:32400` |
-| Enable Remote Access | **On** if Plex friends are not on your tailnet; **Off** if all viewers use Tailscale only |
-
-## 13. Install and configure autobrr
-
-[autobrr](https://autobrr.com) monitors IRC announce channels and RSS feeds, matches releases against your filters, and sends grabs to qBittorrent and your *arr* apps. It sits between Prowlarr (indexers) and qBittorrent (downloads) in this stack. [Qui](https://getqui.com) (section 14) handles cross-seeding separately.
-
-The AUR package **`autobrr`** ships a systemd unit, sysusers, and tmpfiles. Config, SQLite database, and logs live under **`/var/lib/autobrr`**. The `autobrr` system user and that directory were pre-created in sections 4 and 7 with primary group `media`.
+```bash
+sudo useradd --system --home-dir /var/lib/cross-seed --shell /usr/bin/nologin --gid media crossseed
+sudo passwd --lock crossseed
+sudo mkdir -p /var/lib/cross-seed
+sudo chown crossseed:media /var/lib/cross-seed
+sudo chmod 750 /var/lib/cross-seed
+```
 
 **Run as your normal user — do NOT use sudo:**
 
 ```bash
-paru -S --needed autobrr
+paru -S nodejs-cross-seed
 ```
 
-Confirm ownership after install (the package tmpfiles may reset permissions):
+Generate the default configuration:
 
 ```bash
-sudo usermod --gid media autobrr
-sudo chown autobrr:media /var/lib/autobrr
-sudo chmod 775 /var/lib/autobrr
+sudo -u crossseed -H cross-seed gen-config
 ```
 
-### Generate config file
-
-The vendor unit passes `--config=/var/lib/autobrr`. Bootstrap `config.toml` and the SQLite database **before** enabling systemd — a cold start under the hardened unit can fail if the directory is empty:
+This creates `/var/lib/cross-seed/.cross-seed/config.js`. Edit it to connect to qBittorrent and your Torznab indexers (from Prowlarr):
 
 ```bash
-sudo -u autobrr timeout --signal=TERM 15s /usr/bin/autobrr --config=/var/lib/autobrr || true
+sudo nano /var/lib/cross-seed/.cross-seed/config.js
 ```
 
-Verify:
+Key settings to configure:
+
+| Setting | Example value |
+|---------|---------------|
+| `torrentClients` | `["qbittorrent:http://user:pass@localhost:8080"]` |
+| `torznab` | `["http://localhost:9696/1/api?apikey=YOUR_KEY", ...]` (copy from Prowlarr under each indexer) |
+| `linkDirs` | `["/media/downloads/complete"]` (optional, enables hardlinking) |
+
+Refer to the [cross-seed docs](https://cross-seed.org/docs/basics/getting-started) for all available options. If you skip `linkDirs`, cross-seed will tell you which config values to adjust.
+
+Create the systemd service:
 
 ```bash
-ls -la /var/lib/autobrr/config.toml /var/lib/autobrr/autobrr.db
-```
-
-`timeout` stopping the process with SIGTERM is expected. `AUTOBRR__HOST=0.0.0.0` in the drop-in below overrides the default `host = "127.0.0.1"` in `config.toml` for Tailscale access.
-
-### systemd drop-in override
-
-Run with group `media`, listen on all interfaces for Tailscale, and start after qBittorrent and the *arr* apps:
-
-```bash
-sudo mkdir -p /etc/systemd/system/autobrr.service.d
-sudo nano /etc/systemd/system/autobrr.service.d/override.conf
+sudo nano /etc/systemd/system/cross-seed.service
 
 [Unit]
-After=network-online.target qbittorrent-nox@qbt.service prowlarr.service sonarr.service radarr.service
+Description=cross-seed daemon
+After=network-online.target
 
 [Service]
+Type=simple
+User=crossseed
 Group=media
+Environment=HOME=/var/lib/cross-seed
+ExecStart=/usr/bin/cross-seed daemon
+Restart=on-failure
+RestartSec=10
 UMask=002
-Environment=AUTOBRR__HOST=0.0.0.0
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-The vendor unit already runs as user `autobrr` with `--config=/var/lib/autobrr`. `Group=media` and `UMask=002` match the other download-stack services.
+Start the service:
 
-### Start autobrr
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now cross-seed
+systemctl status cross-seed
+```
+
+Check logs with:
+
+```bash
+sudo journalctl -u cross-seed -f
+```
+
+## 15. Install and configure autobrr
+
+autobrr monitors IRC announce channels and RSS feeds to automatically grab new releases and push them to qBittorrent. It provides a web UI on port 7474.
+
+Create a system user for autobrr:
+
+```bash
+sudo useradd --system --home-dir /var/lib/autobrr --shell /usr/bin/nologin --gid media autobrr
+sudo passwd --lock autobrr
+sudo mkdir -p /var/lib/autobrr
+sudo chown autobrr:media /var/lib/autobrr
+sudo chmod 750 /var/lib/autobrr
+```
+
+**Run as your normal user — do NOT use sudo:**
+
+```bash
+paru -S autobrr
+```
+
+Pre-create the config so autobrr listens on all interfaces (needed for Tailscale access). First generate a random session secret:
+
+```bash
+head /dev/urandom | tr -dc A-Za-z0-9 | head -c32; echo
+```
+
+Copy the output, then create the config:
+
+```bash
+sudo nano /var/lib/autobrr/config.toml
+
+host = "0.0.0.0"
+port = 7474
+sessionSecret = "<paste your generated secret>"
+```
+
+Create the systemd service:
+
+```bash
+sudo nano /etc/systemd/system/autobrr.service
+
+[Unit]
+Description=autobrr service
+After=network-online.target
+
+[Service]
+Type=simple
+User=autobrr
+Group=media
+ExecStart=/usr/bin/autobrr --config=/var/lib/autobrr
+Restart=on-failure
+RestartSec=10
+UMask=002
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Start the service:
 
 ```bash
 sudo systemctl daemon-reload
@@ -418,183 +411,240 @@ sudo systemctl enable --now autobrr
 systemctl status autobrr
 ```
 
-### First-time web setup
+Visit `http://<TS_IP>:7474` to create your initial admin account. Under Settings > Download Clients, add qBittorrent at `http://localhost:8080`.
 
-Open `http://kintoun.peacock-pomfret.ts.net:7474` (or `http://<TS_IP>:7474`) and create the autobrr admin account.
+## 16. Install and configure Recyclarr
 
-Then in the autobrr UI:
+Recyclarr automatically syncs TRaSH Guide quality profiles, custom formats, and media naming settings to Sonarr and Radarr. It runs as a periodic one-shot via a systemd timer (no web UI).
 
-1. **Settings → Download clients** — add qBittorrent:
-   - Host: `http://127.0.0.1:8080`
-   - Username / password: qBittorrent Web UI credentials (from `journalctl` in section 11 if you have not changed them yet)
-2. **Settings → Feeds** — optional Torznab feeds from Prowlarr (copy URL + API key from Prowlarr → Indexers)
-3. **Settings → IRC** — connect to indexer announce channels ([autobrr IRC docs](https://autobrr.com/configuration/irc))
-4. **Filters** — create release filters that send matches to qBittorrent and notify Sonarr/Radarr
-
-Follow logs:
+Create a system user for Recyclarr:
 
 ```bash
-sudo journalctl -u autobrr -f
+sudo useradd --system --home-dir /var/lib/recyclarr --shell /usr/bin/nologin --gid media recyclarr
+sudo passwd --lock recyclarr
+sudo mkdir -p /var/lib/recyclarr
+sudo chown recyclarr:media /var/lib/recyclarr
+sudo chmod 750 /var/lib/recyclarr
 ```
-
-Reference: [autobrr configuration](https://autobrr.com/configuration/autobrr).
-
-## 14. Install and configure Qui
-
-[Qui](https://github.com/autobrr/qui) is a qBittorrent web UI from the [autobrr](https://autobrr.com) team. It replaces the standalone [cross-seed](https://cross-seed.org) daemon with a built-in cross-seed module (RSS automation, library scans, auto-search on completion, hardlinking) and runs as its own service on port **7476**. VueTorrent on port **8080** (section 7) can stay for direct qBittorrent Web UI access, or you can use Qui as your primary interface.
-
-The AUR package **`qui-bin`** ships a prebuilt Go binary (no Node.js), plus systemd, sysusers, and tmpfiles units. The `qui` system user and `/var/lib/qui` were pre-created in sections 4 and 7 with primary group `media`.
 
 **Run as your normal user — do NOT use sudo:**
 
 ```bash
-paru -S --needed qui-bin
+paru -S recyclarr-bin
 ```
 
-Confirm ownership after install (the package tmpfiles may reset permissions):
+List available TRaSH Guide quality profile templates:
 
 ```bash
-sudo usermod --gid media qui
-sudo chown qui:media /var/lib/qui
-sudo chmod 775 /var/lib/qui
+sudo -u recyclarr RECYCLARR_APP_DATA=/var/lib/recyclarr recyclarr config list templates
 ```
 
-### Generate config file
-
-The override below points `--config-dir` at `/var/lib/qui`. Create `config.toml` there **before** starting the service — `qui serve` expects that file (or a writable directory to create it), and systemd will fail on first boot if neither is in place:
+Generate config files from templates. Pick the profiles that match your setup (e.g., `hd-bluray-web` for 1080p movies, `web-1080p` for TV):
 
 ```bash
-sudo -u qui /usr/bin/qui generate-config --config-dir /var/lib/qui
+sudo -u recyclarr RECYCLARR_APP_DATA=/var/lib/recyclarr recyclarr config create --template hd-bluray-web
+sudo -u recyclarr RECYCLARR_APP_DATA=/var/lib/recyclarr recyclarr config create --template web-1080p
 ```
 
-Verify:
+This creates config files in `/var/lib/recyclarr/configs/`. Edit each one with your instance URL and API key (Settings → General → Security in Sonarr/Radarr):
 
 ```bash
-ls -la /var/lib/qui/config.toml
+sudo nano /var/lib/recyclarr/configs/hd-bluray-web.yml
 ```
 
-This command skips if `config.toml` already exists. `QUI__HOST=0.0.0.0` in the drop-in below still overrides the `host` value in the file for Tailscale access.
+Update `base_url` and `api_key`:
 
-### systemd drop-in override
-
-Store config and data directly under `/var/lib/qui` (same layout as Sonarr/Radarr), run with group `media`, listen on all interfaces for Tailscale, and start after qBittorrent:
+```yaml
+radarr:
+  hd-bluray-web:
+    base_url: http://localhost:7878
+    api_key: <your_radarr_api_key>
+    delete_old_custom_formats: true
+```
 
 ```bash
-sudo mkdir -p /etc/systemd/system/qui.service.d
-sudo nano /etc/systemd/system/qui.service.d/override.conf
+sudo nano /var/lib/recyclarr/configs/web-1080p.yml
+```
+
+```yaml
+sonarr:
+  web-1080p:
+    base_url: http://localhost:8989
+    api_key: <your_sonarr_api_key>
+    delete_old_custom_formats: true
+```
+
+Optionally, store API keys in a secrets file:
+
+```bash
+sudo nano /var/lib/recyclarr/secrets.yml
+
+radarr_url: http://localhost:7878
+radarr_apikey: <your_radarr_api_key>
+sonarr_url: http://localhost:8989
+sonarr_apikey: <your_sonarr_api_key>
+```
+
+Then reference them in config files with `!secret radarr_url`, `!secret radarr_apikey`, etc.
+
+Fix ownership after editing configs (nano runs as root via sudo):
+
+```bash
+sudo chown -R recyclarr:media /var/lib/recyclarr
+```
+
+Run the first sync to import TRaSH Guide settings:
+
+```bash
+sudo -u recyclarr RECYCLARR_APP_DATA=/var/lib/recyclarr recyclarr sync
+```
+
+Verify in Sonarr/Radarr under Settings → Custom Formats and Settings → Profiles that the new quality profiles and custom formats appear.
+
+Create the systemd service and timer for daily syncs:
+
+```bash
+sudo nano /etc/systemd/system/recyclarr.service
 
 [Unit]
-After=network-online.target qbittorrent-nox@qbt.service
+Description=Recyclarr TRaSH Guides sync
+After=network-online.target sonarr.service radarr.service
+Wants=network-online.target
 
 [Service]
+Type=oneshot
+User=recyclarr
 Group=media
-UMask=002
-Environment=QUI__HOST=0.0.0.0
-ExecStart=
-ExecStart=/usr/bin/qui serve --config-dir /var/lib/qui --data-dir /var/lib/qui
+Environment=RECYCLARR_APP_DATA=/var/lib/recyclarr
+ExecStart=/usr/bin/recyclarr sync
 ```
 
-`ExecStart=` clears the vendor line before setting a new one. `--config-dir` and `--data-dir` place `config.toml` and `qui.db` in `/var/lib/qui` instead of `~/.config/qui`.
+```bash
+sudo nano /etc/systemd/system/recyclarr.timer
 
-### Start Qui
+[Unit]
+Description=Run Recyclarr sync daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Start the timer:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now qui
-systemctl status qui
+sudo systemctl enable --now recyclarr.timer
 ```
 
-### First-time web setup
-
-Open `http://kintoun.peacock-pomfret.ts.net:7476` (or `http://<TS_IP>:7476`) and create the Qui admin account.
-
-Then in the Qui UI:
-
-1. **Settings → qBittorrent instances** — add your instance:
-   - Host: `http://127.0.0.1:8080`
-   - Username / password: qBittorrent Web UI credentials (from `journalctl` in section 11 if you have not changed them yet)
-2. **Cross-Seed** — enable and configure per the [Qui cross-seed docs](https://getqui.com/docs/features/cross-seed/overview):
-   - Connect **Prowlarr** Torznab feeds (copy API URLs from Prowlarr → Indexers)
-   - Set **link directories** to `/media/downloads/complete` for hardlinking (requires `qui`/`media` group access to download paths — already set via setgid dirs in section 8)
-   - Enable **Auto-search on completion** and/or RSS automation as desired
-3. Optional: connect **Sonarr** / **Radarr** in Qui settings for season-pack assembly and tighter *arr* integration
-
-Follow logs:
+Verify with:
 
 ```bash
-sudo journalctl -u qui -f
+systemctl list-timers recyclarr.timer
+sudo journalctl -u recyclarr.service
 ```
 
-Reference: [Qui documentation](https://getqui.com).
+## 17. Set up Caddy for HTTPS (optional)
 
-## 15. Install and configure Unpackerr
+Caddy acts as a reverse proxy with automatic HTTPS using Tailscale-issued certificates. This eliminates browser security warnings and enables secure-context browser features (clipboard, service workers, etc.). Traffic over Tailscale is already encrypted via WireGuard — Caddy adds a second TLS layer that the browser recognises as secure.
 
-[Unpackerr](https://unpackerr.zip/) watches qBittorrent-completed downloads that Sonarr/Radarr are waiting on and **extracts archives** (RAR, zip, etc.) in place so the *arr* apps can import the unpacked files. It has **no web UI** (optional Prometheus metrics on `5656` if enabled in config). It uses each app’s download queue over HTTP API—use the Sonarr and Radarr API keys from Settings → General → Security in each app.
+Since Caddy 2.5+, it natively fetches certificates from the local Tailscale daemon for `*.ts.net` domains with no manual certificate management.
 
-**Run as your normal user — do NOT use sudo:**
+Plex handles its own TLS certificates (via `plex.direct`), and cross-seed has no web UI, so neither needs Caddy.
+
+### Install Caddy
 
 ```bash
-paru -S unpackerr
+sudo pacman -S caddy
 ```
 
-The AUR package creates the `unpackerr` user, installs `/usr/bin/unpackerr`, and ships `/etc/unpackerr/unpackerr.conf` (backup file on upgrades). Add the user to the `media` group and create the log directory expected by the vendor systemd unit (`UN_LOG_FILE=/var/log/unpackerr/unpackerr.log`):
+### Grant Caddy permission to fetch Tailscale certificates
+
+Caddy runs as the `caddy` user, which needs access to the Tailscale daemon socket to request certificates. Add the following line to the tailscaled environment file:
 
 ```bash
-sudo usermod -aG media unpackerr
-sudo mkdir -p /var/log/unpackerr
-sudo chown unpackerr:media /var/log/unpackerr
-sudo chmod 775 /var/log/unpackerr
+sudo nano /etc/default/tailscaled
+
+TS_PERMIT_CERT_UID=caddy
 ```
 
-Add a drop-in override so the service runs with group `media` and `umask` 002 (same pattern as Sonarr/Radarr), and starts after qBittorrent and the *arr* apps:
+Restart the Tailscale daemon to pick up the change:
 
 ```bash
-sudo mkdir -p /etc/systemd/system/unpackerr.service.d
-sudo nano /etc/systemd/system/unpackerr.service.d/override.conf
-
-[Unit]
-Description=Unpackerr
-After=network-online.target qbittorrent-nox@qbt.service sonarr.service radarr.service
-
-[Service]
-Group=media
-UMask=002
+sudo systemctl restart tailscaled
 ```
 
-Edit the main config and uncomment **`url`**, **`api_key`**, and **`paths`** inside each `[[sonarr]]` and `[[radarr]]` block you use (comment out or remove unused Starr blocks to avoid startup warnings):
+### Enable HTTPS certificates in your tailnet
+
+In the [Tailscale admin console](https://login.tailscale.com/admin/dns), make sure **HTTPS Certificates** is enabled under DNS settings. This allows machines to request Let's Encrypt certificates for their `*.ts.net` hostnames.
+
+### Configure the Caddyfile
+
+Replace `<FQDN>` below with your machine's full Tailscale hostname (e.g., `nas.tailnet-name.ts.net`). Get it with:
 
 ```bash
-sudo nano /etc/unpackerr/unpackerr.conf
+tailscale status --self --json | grep -oP '"DNSName"\s*:\s*"\K[^"]+' | sed 's/\.$//'
 ```
 
-| Setting | Value |
-|---------|--------|
-| `[[sonarr]]` → `url` | `http://127.0.0.1:8989` |
-| `[[sonarr]]` → `api_key` | Sonarr → Settings → General → Security |
-| `[[sonarr]]` → `paths` | `['/media/downloads/complete']` (fallback if the path from the API is not visible to unpackerr) |
-| `[[radarr]]` → `url` | `http://127.0.0.1:7878` |
-| `[[radarr]]` → `api_key` | Radarr → Settings → General → Security |
-| `[[radarr]]` → `paths` | `['/media/downloads/complete']` |
-
-Keep `protocols` at the default for torrent-only; if you use Usenet, add `usenet,UsenetDownloadProtocol` as described in the file comments. For torrents, do **not** enable `delete_orig` unless you understand the implications (see upstream docs).
-
-Start the service:
+Edit the Caddyfile:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now unpackerr
-systemctl status unpackerr
+sudo nano /etc/caddy/Caddyfile
+
+<FQDN>:10443 {
+    reverse_proxy 127.0.0.1:8080
+}
+
+<FQDN>:10444 {
+    reverse_proxy 127.0.0.1:8989
+}
+
+<FQDN>:10445 {
+    reverse_proxy 127.0.0.1:7878
+}
+
+<FQDN>:10446 {
+    reverse_proxy 127.0.0.1:9696
+}
+
+<FQDN>:10447 {
+    reverse_proxy 127.0.0.1:7474
+}
 ```
 
-Follow logs:
+### Start Caddy
 
 ```bash
-sudo journalctl -u unpackerr -f
+sudo systemctl enable --now caddy
+systemctl status caddy
 ```
 
-Reference: [Unpackerr configuration](https://unpackerr.zip/docs/install/configuration/).
+Caddy automatically fetches a Tailscale certificate on the first HTTPS request to each port. Certificates are valid for 90 days and renew automatically.
 
-## 16. Set up Btrfs data SSD
+Check logs if anything goes wrong:
+
+```bash
+sudo journalctl -u caddy -f
+```
+
+### HTTPS access
+
+| Service     | HTTPS URL                               |
+|-------------|-----------------------------------------|
+| qBittorrent | `https://<FQDN>:10443`                 |
+| Sonarr      | `https://<FQDN>:10444`                 |
+| Radarr      | `https://<FQDN>:10445`                 |
+| Prowlarr    | `https://<FQDN>:10446`                 |
+| autobrr     | `https://<FQDN>:10447`                 |
+| Plex        | `https://<FQDN>:32400/web` (own TLS)   |
+
+The HTTP URLs from step 13 continue to work alongside HTTPS. To enforce HTTPS-only, bind each service to `127.0.0.1` in its own settings so it is only reachable through Caddy.
+
+## 18. Set up Btrfs data SSD
 
 This sets up a single 2.5" SSD at `/data` with a subvolume layout that supports incremental backups via `btrfs send/receive` when a second SSD is added later.
 
@@ -664,12 +714,6 @@ mountpoint /data/.snapshots
 
 ### Create snapshot script
 
-For the **`/media`** Btrfs pool (see pre-flight checks), keep daily read-only snapshots under `/media/.snapshots` on the **same filesystem** as `/media`. Create the directory if needed:
-
-```bash
-sudo mkdir -p /media/.snapshots
-```
-
 ```bash
 sudo nano /usr/local/bin/daily-data-snapshot.sh
 
@@ -677,9 +721,9 @@ sudo nano /usr/local/bin/daily-data-snapshot.sh
 # Strict mode: Exit on error, undefined vars, or pipe failures
 set -euo pipefail
 
-# CONFIGURATION — /media RAID pool only (not /data)
-SOURCE_SUBVOL="/media"
-SNAP_DIR="/media/.snapshots"
+# CONFIGURATION
+SOURCE_SUBVOL="/data"
+SNAP_DIR="/data/.snapshots"
 # Naming with date for easy sorting and send/receive identification
 TIMESTAMP=$(date +%Y-%m-%d)
 KEEP=14
@@ -718,7 +762,7 @@ Test it:
 
 ```bash
 sudo /usr/local/bin/daily-data-snapshot.sh
-ls /media/.snapshots/
+ls /data/.snapshots/
 ```
 
 ### Create systemd timer and service for daily snapshots
@@ -728,9 +772,9 @@ ls /media/.snapshots/
 sudo nano /etc/systemd/system/daily-data-snapshot.service
 
 [Unit]
-Description=Daily /media snapshot
-Requires=media.mount
-After=media.mount
+Description=Daily Data Snapshot
+Requires=data.mount
+After=data.mount
 
 [Service]
 Type=oneshot
@@ -743,7 +787,7 @@ IOSchedulingClass=idle
 sudo nano /etc/systemd/system/daily-data-snapshot.timer
 
 [Unit]
-Description=Create daily /media snapshots
+Description=Create daily data snapshots
 
 [Timer]
 # Run every day at 12:00 AM
@@ -762,11 +806,9 @@ sudo systemctl enable --now daily-data-snapshot.timer
 systemctl list-timers daily-data-snapshot.timer
 ```
 
-## 17. (Future) Add backup SSD with btrfs send/receive
+## 19. (Future) Add backup SSD with btrfs send/receive
 
 When the second SSD arrives, format it, do an initial full send, then incremental sends going forward.
-
-If daily snapshots are stored under **`/media/.snapshots`** (see the snapshot script above) rather than **`/data/.snapshots`**, use `/media/.snapshots` in place of `/data/.snapshots` in the commands below.
 
 ### Format and create matching subvolumes
 
