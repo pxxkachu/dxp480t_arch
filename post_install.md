@@ -389,7 +389,7 @@ An **A record** maps a hostname to an **IPv4 address**. When your phone looks up
 
 A **wildcard A record** (`*` → `<TS_IP>`) makes most subdomains of `lehaus.io` resolve to the NAS — `qui.lehaus.io`, `qbit.lehaus.io`, `sonarr.lehaus.io`, and any future NAS service — with a single Porkbun entry. New NAS services only need a Caddy block; no DNS changes.
 
-A **specific A record** beats a wildcard for that exact name. Pi-hole runs on a separate Raspberry Pi with its own Tailscale IP, so `pihole.lehaus.io` gets its own record pointing at the Pi — not the NAS.
+A **specific A record** beats a wildcard for that exact name. Pi-hole runs on the Raspberry Pi **`rpcmiv`** (CM4) with its own Tailscale IP — see [`rpcmiv/post_install.md`](../rpcmiv/post_install.md) for Caddy and Pi-hole HTTPS setup.
 
 The bare apex (`lehaus.io` with no subdomain) is **not** covered by `*`; only `something.lehaus.io` is. That is fine — services use named subdomains.
 
@@ -428,16 +428,13 @@ caddy list-modules | grep -i porkbun
 3. Go to **Account** → **API Access** → create a key (e.g. `caddy-lehaus`).
 4. Save the API key and secret key.
 
-The same API key works for Caddy on both the NAS and the Raspberry Pi.
-
-Store credentials on the NAS (not in the Caddyfile). Config and secrets live under `/var/lib/caddy`, same pattern as `/var/lib/qui` and `/var/lib/autobrr` — not `/etc/caddy` (the Arch package default for the stock Caddyfile only):
+Store credentials on the NAS (not in the Caddyfile). Config and secrets live under `/var/lib/caddy`, same pattern as `/var/lib/qui` and `/var/lib/autobrr`:
 
 ```bash
 sudo nano /var/lib/caddy/porkbun.env
 
 PORKBUN_API_KEY=pk1_...
 PORKBUN_SECRET_API_KEY=sk1_...
-TAILNET_IP=<TS_IP>
 ```
 
 ```bash
@@ -445,25 +442,9 @@ sudo chown caddy:caddy /var/lib/caddy/porkbun.env
 sudo chmod 600 /var/lib/caddy/porkbun.env
 ```
 
-Replace `<TS_IP>` with the NAS Tailscale IP from step 1 (`tailscale ip -4` on the NAS).
+Only Porkbun API keys go here — do not put `TAILNET_IP` in this file. The start script in the next section resolves it from `tailscale ip -4` at runtime.
 
-On the Raspberry Pi, create the same file with the **Pi's** Tailscale IP:
-
-```bash
-sudo mkdir -p /var/lib/caddy
-sudo nano /var/lib/caddy/porkbun.env
-
-PORKBUN_API_KEY=pk1_...
-PORKBUN_SECRET_API_KEY=sk1_...
-TAILNET_IP=<PI_TS_IP>
-```
-
-```bash
-sudo chown caddy:caddy /var/lib/caddy/porkbun.env
-sudo chmod 600 /var/lib/caddy/porkbun.env
-```
-
-Replace `<PI_TS_IP>` with `tailscale ip -4` run on the Pi.
+Use the same Porkbun API key on **`rpcmiv`** — see [`rpcmiv/post_install.md`](../rpcmiv/post_install.md).
 
 ### Create DNS records in Porkbun
 
@@ -472,7 +453,7 @@ Replace `<PI_TS_IP>` with `tailscale ip -4` run on the Pi.
 | A | `*` | `<TS_IP>` | 600 |
 | A | `pihole` | `<PI_TS_IP>` | 600 |
 
-The wildcard covers NAS services (`qui.lehaus.io`, `qbit.lehaus.io`, `sonarr.lehaus.io`, etc.). The `pihole` record overrides the wildcard for `pihole.lehaus.io` only.
+The wildcard covers NAS services (`qui.lehaus.io`, `qbit.lehaus.io`, `sonarr.lehaus.io`, etc.). The `pihole` record overrides the wildcard for `pihole.lehaus.io` only (`<PI_TS_IP>` = `tailscale ip -4` on **rpcmiv**).
 
 Verify from a tailnet device:
 
@@ -485,6 +466,34 @@ Should return `<TS_IP>` and `<PI_TS_IP>` respectively.
 
 ### Configure Caddy on the NAS
 
+`After=tailscaled.service` only waits for the Tailscale **daemon** — not for a `100.x` address on `tailscale0`. Use the same start script as **rpcmiv** to wait for Tailscale and export the live IP for `bind`.
+
+```bash
+sudo nano /usr/local/bin/caddy-tailscale.sh
+```
+
+```bash
+#!/bin/bash
+set -euo pipefail
+set -a
+source /var/lib/caddy/porkbun.env
+set +a
+for _ in $(seq 1 30); do
+  TAILNET_IP="$(tailscale ip -4 2>/dev/null || true)"
+  if [[ -n "${TAILNET_IP}" ]] && ip -4 addr show dev tailscale0 2>/dev/null | grep -q "inet ${TAILNET_IP}/"; then
+    export TAILNET_IP
+    exec /usr/local/bin/caddy run --environ --config /var/lib/caddy/Caddyfile
+  fi
+  sleep 1
+done
+echo "tailscale0 has no usable IPv4 after 30s" >&2
+exit 1
+```
+
+```bash
+sudo chmod 755 /usr/local/bin/caddy-tailscale.sh
+```
+
 Create the systemd unit (the custom xcaddy build does not install one — do not use a drop-in unless you also installed the `caddy` package from pacman):
 
 ```bash
@@ -492,16 +501,17 @@ sudo nano /etc/systemd/system/caddy.service
 
 [Unit]
 Description=Caddy
-After=network-online.target
+After=network-online.target tailscaled.service
 Wants=network-online.target
+Requires=tailscaled.service
 
 [Service]
 Type=notify
 User=caddy
 Group=caddy
-EnvironmentFile=/var/lib/caddy/porkbun.env
-ExecStart=/usr/local/bin/caddy run --environ --config /var/lib/caddy/Caddyfile
+ExecStart=/usr/local/bin/caddy-tailscale.sh
 ExecReload=/usr/local/bin/caddy reload --config /var/lib/caddy/Caddyfile
+TimeoutStartSec=60
 TimeoutStopSec=5s
 LimitNOFILE=1048576
 AmbientCapabilities=CAP_NET_BIND_SERVICE
@@ -592,111 +602,31 @@ Check logs if anything goes wrong:
 sudo journalctl -u caddy -f
 ```
 
-Common issues: Porkbun API access not enabled for `lehaus.io`, typo in API keys, or `TAILNET_IP` mismatch after a Tailscale IP change.
+Common issues: Porkbun API access not enabled for `lehaus.io`, typo in API keys, or Tailscale not connected.
 
-### Configure Caddy on the Raspberry Pi (Pi-hole)
-
-Pi-hole's admin UI runs on the Pi itself. Create the `caddy` user and data directory (same layout as the NAS):
+**`bind: cannot assign requested address`** — stale hardcoded IP or Tailscale not ready. Confirm the wrapper script is in use (`systemctl cat caddy | grep caddy-tailscale`), then:
 
 ```bash
-sudo useradd --system --home-dir /var/lib/caddy --shell /usr/bin/nologin caddy 2>/dev/null || true
-sudo mkdir -p /var/lib/caddy
-sudo chown caddy:caddy /var/lib/caddy
-sudo chmod 750 /var/lib/caddy
+tailscale ip -4
+ip -4 addr show dev tailscale0
+sudo journalctl -u caddy -n 20
 ```
 
-Build Caddy with the Porkbun module on the Pi (Raspberry Pi OS example):
+Remove `TAILNET_IP` from `porkbun.env` if present — the wrapper sets it at start. If Tailscale is down, run `sudo tailscale up`, then `sudo systemctl restart caddy`.
 
-```bash
-sudo apt install -y golang-go
-go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
-~/go/bin/xcaddy build --with github.com/caddy-dns/porkbun --output /tmp/caddy
-sudo install -m 755 /tmp/caddy /usr/local/bin/caddy
-rm /tmp/caddy
-caddy list-modules | grep -i porkbun
-```
+### HTTPS access (NAS)
 
-Create the systemd unit:
+| Service     | HTTPS URL                         |
+|-------------|-----------------------------------|
+| Qui         | `https://qui.lehaus.io`           |
+| qBittorrent | `https://qbit.lehaus.io`          |
+| Sonarr      | `https://sonarr.lehaus.io`        |
+| Radarr      | `https://radarr.lehaus.io`        |
+| Prowlarr    | `https://prowlarr.lehaus.io`      |
+| autobrr     | `https://autobrr.lehaus.io`       |
+| Plex        | `https://<TS_IP>:32400/web` (own TLS) |
 
-```bash
-sudo nano /etc/systemd/system/caddy.service
-
-[Unit]
-Description=Caddy
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-User=caddy
-Group=caddy
-EnvironmentFile=/var/lib/caddy/porkbun.env
-ExecStart=/usr/local/bin/caddy run --environ --config /var/lib/caddy/Caddyfile
-ExecReload=/usr/local/bin/caddy reload --config /var/lib/caddy/Caddyfile
-TimeoutStopSec=5s
-LimitNOFILE=1048576
-PrivateTmp=true
-ProtectSystem=full
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Edit the Caddyfile on the Pi:
-
-```bash
-sudo nano /var/lib/caddy/Caddyfile
-```
-
-```caddyfile
-{
-    email you@lehaus.io
-    acme_dns porkbun {
-        api_key {env.PORKBUN_API_KEY}
-        api_secret_key {env.PORKBUN_SECRET_API_KEY}
-    }
-}
-
-pihole.lehaus.io {
-    bind {env.TAILNET_IP}
-    @blocked not remote_ip 100.64.0.0/10
-    respond @blocked "Unauthorized" 403
-    tls {
-        resolvers 1.1.1.1
-    }
-    reverse_proxy 127.0.0.1:80 {
-        header_up Host {host}
-        header_up X-Real-IP {remote_host}
-    }
-}
-```
-
-```bash
-sudo chown caddy:caddy /var/lib/caddy/Caddyfile
-```
-
-Start Caddy on the Pi:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now caddy
-systemctl status caddy
-```
-
-Visit `https://pihole.lehaus.io` from a tailnet device to confirm the Pi-hole admin UI loads over HTTPS.
-
-### HTTPS access
-
-| Service     | HTTPS URL                         | Host |
-|-------------|-----------------------------------|------|
-| Qui         | `https://qui.lehaus.io`           | NAS |
-| qBittorrent | `https://qbit.lehaus.io`          | NAS |
-| Sonarr      | `https://sonarr.lehaus.io`        | NAS |
-| Radarr      | `https://radarr.lehaus.io`        | NAS |
-| Prowlarr    | `https://prowlarr.lehaus.io`      | NAS |
-| autobrr     | `https://autobrr.lehaus.io`       | NAS |
-| Pi-hole     | `https://pihole.lehaus.io`        | Raspberry Pi |
-| Plex        | `https://<TS_IP>:32400/web` (own TLS)  | NAS |
+Pi-hole (`https://pihole.lehaus.io`) is on **rpcmiv** — see [`rpcmiv/post_install.md`](../rpcmiv/post_install.md).
 
 ### Enforce HTTPS-only (recommended)
 
