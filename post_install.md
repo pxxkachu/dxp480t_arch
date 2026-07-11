@@ -381,7 +381,7 @@ Caddy acts as a tailnet-only reverse proxy with automatic HTTPS. Traffic between
 
 Services are reached at clean subdomains on port **443** — for example `https://sonarr.lehaus.io` — instead of `https://<FQDN>:10444`. Nothing is exposed to the public internet: DNS points at Tailscale IPs (`100.x.x.x`), which are only routable inside your tailnet.
 
-Plex can use its own TLS (`plex.direct`) or be proxied through Caddy.
+Plex is proxied through Caddy for the **metadata web UI** on the tailnet only — see [Plex (metadata web UI only)](#plex-metadata-web-ui-only) below. Watching stays on Plex **remote access** and client discovery (unchanged).
 
 ### DNS primer: A records, wildcard, and Pi-hole
 
@@ -578,6 +578,14 @@ autobrr.lehaus.io {
     import tailnet
     reverse_proxy 127.0.0.1:7474
 }
+
+plex.lehaus.io {
+    import tailnet
+    reverse_proxy 127.0.0.1:32400 {
+        header_up Host {host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}
 ```
 
 Replace `you@lehaus.io` with your email (used for Let's Encrypt account notices).
@@ -624,9 +632,30 @@ Remove `TAILNET_IP` from `porkbun.env` if present — the wrapper sets it at sta
 | Radarr      | `https://radarr.lehaus.io`        |
 | Prowlarr    | `https://prowlarr.lehaus.io`      |
 | autobrr     | `https://autobrr.lehaus.io`       |
-| Plex        | `https://<TS_IP>:32400/web` (own TLS) |
+| Plex (web)  | `https://plex.lehaus.io/web`      |
 
 Pi-hole (`https://pihole.lehaus.io`) is on **rpcmiv** — see [`rpcmiv/post_install.md`](../rpcmiv/post_install.md).
+
+### Plex (metadata web UI only)
+
+Caddy gives you a consistent `lehaus.io` URL for editing library metadata in the browser. It is **not** a replacement for Plex remote access — leave **Settings → Remote Access** enabled and keep using Plex apps for watching (discovery and relay work as before).
+
+`plex.lehaus.io` is covered by the wildcard `A` record; no Porkbun changes needed.
+
+In Plex → **Settings → Network** (admin account):
+
+1. **Custom server access URLs** — add:
+   ```
+   https://plex.lehaus.io
+   ```
+   This stops the web app from redirecting to `:32400` or the wrong host when you open the Caddy URL.
+2. Leave **Remote access** enabled.
+
+Open `https://plex.lehaus.io/web` from any tailnet device. Sign out and back in once if the web client still shows the old URL.
+
+If the web UI misbehaves (redirect loops, blank page), Plex may be serving HTTPS on port 32400 locally. Change the Caddy block to proxy `https://127.0.0.1:32400` with `tls_insecure_skip_verify` on the upstream transport instead of plain `http://127.0.0.1:32400`.
+
+**Do not** bind Plex to `127.0.0.1` in the [HTTPS-only lockdown](#enforce-https-only-recommended) below — remote access and client discovery need Plex listening on its normal interface.
 
 ### Enforce HTTPS-only (recommended)
 
@@ -652,6 +681,8 @@ host = "127.0.0.1"
 ```
 
 **Sonarr / Radarr / Prowlarr** — in each app's `config.xml`, set `<BindAddress>127.0.0.1</BindAddress>` (under Settings → General in the web UI, or edit the file directly while the service is stopped).
+
+**Plex** — skip this step. Remote access and app discovery require Plex to keep its default listen address; use `https://plex.lehaus.io/web` on the tailnet for metadata instead of locking down `:32400`.
 
 Restart affected services:
 
