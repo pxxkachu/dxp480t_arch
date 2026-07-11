@@ -581,13 +581,9 @@ autobrr.lehaus.io {
 
 plex.lehaus.io {
     import tailnet
-    reverse_proxy https://127.0.0.1:32400 {
-        transport http {
-            tls_insecure_skip_verify
-        }
+    reverse_proxy 127.0.0.1:32400 {
         header_up Host {host}
         header_up X-Forwarded-Proto {scheme}
-        header_up X-Forwarded-Host {host}
     }
 }
 ```
