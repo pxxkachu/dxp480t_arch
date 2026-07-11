@@ -1,11 +1,5 @@
 # Post-Install: Arch NAS (UGREEN DXP480T Plus)
 
-Headless media server setup with qBittorrent, Qui, Sonarr, Radarr, Prowlarr, autobrr, Plex, Tailscale, and Caddy (HTTPS reverse proxy on `lehaus.io`).
-
-All commands include `sudo` where needed — copy and paste directly into your terminal as your normal user. Steps 5 and 6 **must not** use sudo (AUR packages must be built as a normal user).
-
----
-
 ## Pre-flight checks
 
 Verify the Btrfs data pool is mounted:
@@ -20,8 +14,6 @@ If not mounted:
 sudo mount -t btrfs LABEL=media /media
 ```
 
----
-
 ## 1. Install and authenticate Tailscale
 
 ```bash
@@ -29,17 +21,6 @@ sudo pacman -S tailscale
 sudo systemctl enable --now tailscaled
 sudo tailscale up
 ```
-
-Follow the printed authentication link in a browser.
-
-After authenticating, get your Tailscale IP and FQDN:
-
-```bash
-tailscale ip -4
-tailscale status --self --json | grep -oP '"DNSName"\s*:\s*"\K[^"]+' | sed 's/\.$//'
-```
-
-Note these values — referred to as `<TS_IP>` and `<FQDN>` below.
 
 ## 2. Update /etc/hosts
 
@@ -55,7 +36,7 @@ ff00::0     ip6-mcastprefix
 ff02::1     ip6-allnodes
 ff02::2     ip6-allrouters
 
-<TS_IP>     <FQDN> dxp480tp
+<Tailscale_IP>     <Tailscale_full_name> dxp480tp
 ```
 
 ## 3. Create media group and pre-create arr service accounts
@@ -91,11 +72,10 @@ sudo passwd --lock caddy
 sudo pacman -S qbittorrent-nox
 ```
 
-The package creates a user called `qbt` via sysusers. Fix its primary group and home directory:
+The package creates user `qbt` and `/var/lib/qbittorrent` via sysusers/tmpfiles. Add it to the shared `media` group:
 
 ```bash
 sudo usermod --gid media qbt
-sudo usermod -d /var/lib/qbt qbt
 sudo passwd --lock qbt
 ```
 
@@ -138,9 +118,9 @@ Log out and back in after this step for the group membership to take effect.
 ## 8. Create service data directories
 
 ```bash
-sudo mkdir -p /var/lib/qbt
-sudo chown qbt:media /var/lib/qbt
-sudo chmod 775 /var/lib/qbt
+sudo mkdir -p /var/lib/qbittorrent
+sudo chown qbt:media /var/lib/qbittorrent
+sudo chmod 775 /var/lib/qbittorrent
 
 sudo mkdir -p /var/lib/sonarr
 sudo chown sonarr:media /var/lib/sonarr
@@ -198,9 +178,8 @@ sudo nano /etc/systemd/system/qbittorrent-nox@qbt.service.d/override.conf
 [Service]
 Group=media
 UMask=002
-Environment=HOME=/var/lib/qbt
 ```
-
+### Sonarr
 ```bash
 sudo mkdir -p /etc/systemd/system/sonarr.service.d
 sudo nano /etc/systemd/system/sonarr.service.d/override.conf
@@ -209,7 +188,7 @@ sudo nano /etc/systemd/system/sonarr.service.d/override.conf
 Group=media
 UMask=002
 ```
-
+### Radarr
 ```bash
 sudo mkdir -p /etc/systemd/system/radarr.service.d
 sudo nano /etc/systemd/system/radarr.service.d/override.conf
@@ -218,7 +197,7 @@ sudo nano /etc/systemd/system/radarr.service.d/override.conf
 Group=media
 UMask=002
 ```
-
+### Prowlarr
 ```bash
 sudo mkdir -p /etc/systemd/system/prowlarr.service.d
 sudo nano /etc/systemd/system/prowlarr.service.d/override.conf
@@ -230,8 +209,6 @@ UMask=002
 
 ### Qui
 
-[Qui](https://github.com/autobrr/qui) is a modern qBittorrent web UI from the autobrr team. It replaces the default Web UI, proxies qBittorrent for other apps (including autobrr), and includes built-in cross-seeding. Web UI on port **7476**.
-
 Generate the config file before starting the service:
 
 ```bash
@@ -239,7 +216,7 @@ sudo -u qui /usr/bin/qui generate-config --config-dir /var/lib/qui
 ls -la /var/lib/qui/config.toml
 ```
 
-The AUR package ships a default unit. Override it to set the data directory, listen on all interfaces for Tailscale access (change to `127.0.0.1` in step 14 for HTTPS-only), and run as the `qui` user with group `media`:
+The AUR package ships a default unit. Override it to set the data directory, listen on all interfaces for Tailscale access (change to `127.0.0.1` in step 13 for HTTPS-only), and run as the `qui` user with group `media`:
 
 ```bash
 sudo mkdir -p /etc/systemd/system/qui.service.d
@@ -255,9 +232,7 @@ ExecStart=/usr/bin/qui serve --config-dir /var/lib/qui --data-dir /var/lib/qui
 
 ### autobrr
 
-autobrr monitors IRC announce channels and RSS feeds to automatically grab new releases and push them to qBittorrent. Web UI on port **7474**.
-
-Pre-create the config so autobrr listens on all interfaces (needed for direct Tailscale access; change to `127.0.0.1` in step 14 for HTTPS-only). First generate a random session secret:
+Pre-create the config so autobrr listens on all interfaces (needed for direct Tailscale access; change to `127.0.0.1` in step 13 for HTTPS-only). First generate a random session secret:
 
 ```bash
 head /dev/urandom | tr -dc A-Za-z0-9 | head -c32; echo
@@ -332,7 +307,7 @@ sudo journalctl -u qbittorrent-nox@qbt -n 20 | grep -i password
 
 ## 12. Access services
 
-All services are accessible from any device on your Tailscale network using the Tailscale IP. After step 14, use the HTTPS URLs on `lehaus.io` instead.
+All services are accessible from any device on your Tailscale network using the Tailscale IP. After step 13, use the HTTPS URLs on `lehaus.io` instead.
 
 | Service      | URL                         |
 |--------------|-----------------------------|
@@ -344,58 +319,8 @@ All services are accessible from any device on your Tailscale network using the 
 | Plex         | `http://<TS_IP>:32400/web`  |
 | autobrr      | `http://<TS_IP>:7474`       |
 
-## 13. Configure Qui and autobrr
 
-### Qui
-
-Visit `http://<TS_IP>:7476` and create your admin account.
-
-1. **Add qBittorrent** — connect to the local instance at `http://127.0.0.1:8080` using the qBittorrent Web UI credentials from step 11.
-2. **Sync indexers** — go to **Settings → Indexers** and use the Prowlarr 1-click sync (needed for cross-seeding).
-3. **Cross-seed** — configure RSS automation or seeded search under the **Cross-Seed** page. See the [Qui cross-seeding docs](https://github.com/autobrr/qui/blob/main/README.md#cross-seed).
-4. **Client proxy key for autobrr** — go to **Settings → Client Proxy Keys**, create a key for autobrr, and copy the full proxy URL (e.g. `http://localhost:7476/proxy/...`). You will need this below.
-
-Check logs if anything goes wrong:
-
-```bash
-sudo journalctl -u qui -f
-```
-
-### autobrr
-
-Visit `http://<TS_IP>:7474` to create your initial admin account.
-
-Under **Settings → Download Clients**, add qBittorrent using the **Client Proxy URL** from Qui above — e.g. `http://localhost:7476/proxy/...`. Leave username and password blank; Qui handles qBittorrent authentication.
-
-For real-time cross-seeding when autobrr announces releases, add Qui webhook filters under **External** in each autobrr filter. See the [Qui autobrr integration docs](https://github.com/autobrr/qui/blob/main/README.md#autobrr-integration).
-
-Check logs if anything goes wrong:
-
-```bash
-sudo journalctl -u autobrr -f
-```
-
-## 14. Set up Caddy for HTTPS (`lehaus.io`)
-
-Caddy acts as a tailnet-only reverse proxy with automatic HTTPS. Traffic between Tailscale devices is already encrypted via WireGuard; Caddy adds a TLS layer the browser trusts (no warnings, clipboard and other secure-context features work).
-
-Services are reached at clean subdomains on port **443** — for example `https://sonarr.lehaus.io` — instead of `https://<FQDN>:10444`. Nothing is exposed to the public internet: DNS points at Tailscale IPs (`100.x.x.x`), which are only routable inside your tailnet.
-
-Plex is proxied through Caddy for the **metadata web UI** on the tailnet only — see [Plex (metadata web UI only)](#plex-metadata-web-ui-only) below. Watching stays on Plex **remote access** and client discovery (unchanged).
-
-### DNS primer: A records, wildcard, and Pi-hole
-
-An **A record** maps a hostname to an **IPv4 address**. When your phone looks up `sonarr.lehaus.io`, Porkbun's DNS answers with an IP (your NAS Tailscale address); the browser connects to that IP over Tailscale.
-
-A **wildcard A record** (`*` → `<TS_IP>`) makes most subdomains of `lehaus.io` resolve to the NAS — `qui.lehaus.io`, `qbit.lehaus.io`, `sonarr.lehaus.io`, and any future NAS service — with a single Porkbun entry. New NAS services only need a Caddy block; no DNS changes.
-
-A **specific A record** beats a wildcard for that exact name. Pi-hole runs on the Raspberry Pi **`rpcmiv`** (CM4) with its own Tailscale IP — see [`rpcmiv/post_install.md`](../rpcmiv/post_install.md) for Caddy and Pi-hole HTTPS setup.
-
-The bare apex (`lehaus.io` with no subdomain) is **not** covered by `*`; only `something.lehaus.io` is. That is fine — services use named subdomains.
-
-The wildcard TLS certificate (`*.lehaus.io`) is issued separately via Porkbun's API (DNS-01 challenge) and is not the same thing as the wildcard `A` record. Both the NAS and the Pi can request certificates for names they serve under `*.lehaus.io`.
-
-Off-tailnet, `100.x.x.x` addresses are unreachable even though they appear in public DNS. That is expected and keeps services private.
+## 13. Set up Caddy for HTTPS (`lehaus.io`)
 
 ### Build Caddy with the Porkbun DNS module (NAS)
 
@@ -428,7 +353,7 @@ caddy list-modules | grep -i porkbun
 3. Go to **Account** → **API Access** → create a key (e.g. `caddy-lehaus`).
 4. Save the API key and secret key.
 
-Store credentials on the NAS (not in the Caddyfile). Config and secrets live under `/var/lib/caddy`, same pattern as `/var/lib/qui` and `/var/lib/autobrr`:
+Store credentials on the NAS (not in the Caddyfile). Config and secrets live under `/var/lib/caddy`:
 
 ```bash
 sudo nano /var/lib/caddy/porkbun.env
@@ -442,9 +367,6 @@ sudo chown caddy:caddy /var/lib/caddy/porkbun.env
 sudo chmod 600 /var/lib/caddy/porkbun.env
 ```
 
-Only Porkbun API keys go here — do not put `TAILNET_IP` in this file. The start script in the next section resolves it from `tailscale ip -4` at runtime.
-
-Use the same Porkbun API key on **`rpcmiv`** — see [`rpcmiv/post_install.md`](../rpcmiv/post_install.md).
 
 ### Create DNS records in Porkbun
 
@@ -581,9 +503,8 @@ autobrr.lehaus.io {
 
 plex.lehaus.io {
     import tailnet
-    reverse_proxy 127.0.0.1:32400 {
+    reverse_proxy https://127.0.0.1:32400 {
         header_up Host {host}
-        header_up X-Forwarded-Proto {scheme}
     }
 }
 ```
@@ -602,26 +523,6 @@ sudo systemctl enable --now caddy
 systemctl status caddy
 ```
 
-Caddy requests a Let's Encrypt certificate via Porkbun DNS-01 on the first HTTPS request. Certificates renew automatically.
-
-Check logs if anything goes wrong:
-
-```bash
-sudo journalctl -u caddy -f
-```
-
-Common issues: Porkbun API access not enabled for `lehaus.io`, typo in API keys, or Tailscale not connected.
-
-**`bind: cannot assign requested address`** — stale hardcoded IP or Tailscale not ready. Confirm the wrapper script is in use (`systemctl cat caddy | grep caddy-tailscale`), then:
-
-```bash
-tailscale ip -4
-ip -4 addr show dev tailscale0
-sudo journalctl -u caddy -n 20
-```
-
-Remove `TAILNET_IP` from `porkbun.env` if present — the wrapper sets it at start. If Tailscale is down, run `sudo tailscale up`, then `sudo systemctl restart caddy`.
-
 ### HTTPS access (NAS)
 
 | Service     | HTTPS URL                         |
@@ -634,7 +535,6 @@ Remove `TAILNET_IP` from `porkbun.env` if present — the wrapper sets it at sta
 | autobrr     | `https://autobrr.lehaus.io`       |
 | Plex (web)  | `https://plex.lehaus.io/web`      |
 
-Pi-hole (`https://pihole.lehaus.io`) is on **rpcmiv** — see [`rpcmiv/post_install.md`](../rpcmiv/post_install.md).
 
 ### Plex (metadata web UI only)
 
@@ -653,30 +553,13 @@ In Plex → **Settings → Network** (admin account):
 
 Open `https://plex.lehaus.io/web` from any tailnet device. Sign out and back in once if the web client still shows the old URL.
 
-Plex serves **HTTPS** on port 32400 with its own `plex.direct` certificate. Caddy must proxy to `https://127.0.0.1:32400` with `tls_insecure_skip_verify` — plain `http://127.0.0.1:32400` often fails or misbehaves.
-
-**`SSL_ERROR_INTERNAL_ERROR_ALERT` in the browser** — TLS failed before Plex was reached. On the NAS:
-
-```bash
-# Other lehaus.io sites work but Plex does not?
-sudo /usr/local/bin/caddy validate --config /var/lib/caddy/Caddyfile
-sudo journalctl -u caddy -n 30 --no-pager
-curl -vk --resolve plex.lehaus.io:443:$(tailscale ip -4) https://plex.lehaus.io/web
-```
-
-Look for `no certificate available for 'plex.lehaus.io'` or `TLS handshake error` in the Caddy log. Common fixes:
-
-- Confirm the `plex.lehaus.io` block is in `/var/lib/caddy/Caddyfile` (not only in this doc), then `sudo systemctl reload caddy`.
-- Use the HTTPS upstream block above (not plain `http://`).
-- Set the custom access URL to `https://plex.lehaus.io:443` (not bare `https://plex.lehaus.io`).
-
 **Do not** bind Plex to `127.0.0.1` in the [HTTPS-only lockdown](#enforce-https-only-recommended) below — remote access and client discovery need Plex listening on its normal interface.
 
 ### Enforce HTTPS-only (recommended)
 
 After confirming HTTPS works, bind each service to `127.0.0.1` so it is only reachable through Caddy:
 
-**qBittorrent** — in `/var/lib/qbt/.config/qBittorrent/qBittorrent.conf`:
+**qBittorrent** — in `/var/lib/qbittorrent/.config/qBittorrent/qBittorrent.conf`:
 
 ```ini
 [Preferences]
@@ -713,7 +596,7 @@ curl -m 3 http://<TS_IP>:8989 || echo "blocked as expected"
 
 HTTPS via Caddy should still work from any tailnet device.
 
-## 15. Set up Btrfs data SSD
+## 14. Set up Btrfs data SSD
 
 This sets up a single 2.5" SSD at `/data` with a subvolume layout that supports incremental backups via `btrfs send/receive` when a second SSD is added later.
 
@@ -875,7 +758,7 @@ sudo systemctl enable --now daily-data-snapshot.timer
 systemctl list-timers daily-data-snapshot.timer
 ```
 
-## 16. (Future) Add backup SSD with btrfs send/receive
+## 15. (Future) Add backup SSD with btrfs send/receive
 
 When the second SSD arrives, format it, do an initial full send, then incremental sends going forward.
 
