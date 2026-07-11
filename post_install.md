@@ -581,9 +581,13 @@ autobrr.lehaus.io {
 
 plex.lehaus.io {
     import tailnet
-    reverse_proxy 127.0.0.1:32400 {
+    reverse_proxy https://127.0.0.1:32400 {
+        transport http {
+            tls_insecure_skip_verify
+        }
         header_up Host {host}
         header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-Host {host}
     }
 }
 ```
@@ -644,16 +648,31 @@ Caddy gives you a consistent `lehaus.io` URL for editing library metadata in the
 
 In Plex → **Settings → Network** (admin account):
 
-1. **Custom server access URLs** — add:
+1. **Custom server access URLs** — add (include `:443` so Plex does not assume port 32400):
    ```
-   https://plex.lehaus.io
+   https://plex.lehaus.io:443
    ```
    This stops the web app from redirecting to `:32400` or the wrong host when you open the Caddy URL.
 2. Leave **Remote access** enabled.
 
 Open `https://plex.lehaus.io/web` from any tailnet device. Sign out and back in once if the web client still shows the old URL.
 
-If the web UI misbehaves (redirect loops, blank page), Plex may be serving HTTPS on port 32400 locally. Change the Caddy block to proxy `https://127.0.0.1:32400` with `tls_insecure_skip_verify` on the upstream transport instead of plain `http://127.0.0.1:32400`.
+Plex serves **HTTPS** on port 32400 with its own `plex.direct` certificate. Caddy must proxy to `https://127.0.0.1:32400` with `tls_insecure_skip_verify` — plain `http://127.0.0.1:32400` often fails or misbehaves.
+
+**`SSL_ERROR_INTERNAL_ERROR_ALERT` in the browser** — TLS failed before Plex was reached. On the NAS:
+
+```bash
+# Other lehaus.io sites work but Plex does not?
+sudo /usr/local/bin/caddy validate --config /var/lib/caddy/Caddyfile
+sudo journalctl -u caddy -n 30 --no-pager
+curl -vk --resolve plex.lehaus.io:443:$(tailscale ip -4) https://plex.lehaus.io/web
+```
+
+Look for `no certificate available for 'plex.lehaus.io'` or `TLS handshake error` in the Caddy log. Common fixes:
+
+- Confirm the `plex.lehaus.io` block is in `/var/lib/caddy/Caddyfile` (not only in this doc), then `sudo systemctl reload caddy`.
+- Use the HTTPS upstream block above (not plain `http://`).
+- Set the custom access URL to `https://plex.lehaus.io:443` (not bare `https://plex.lehaus.io`).
 
 **Do not** bind Plex to `127.0.0.1` in the [HTTPS-only lockdown](#enforce-https-only-recommended) below — remote access and client discovery need Plex listening on its normal interface.
 
