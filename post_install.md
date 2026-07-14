@@ -1,4 +1,69 @@
-# Post-Install: Arch NAS (UGREEN DXP480T Plus)
+# Arch NAS (UGREEN DXP480T Plus)
+
+Arch Linux install (`install.sh`) and post-install configuration for the UGREEN DXP480T Plus NAS.
+
+---
+
+## Installation — run from the git repo (Arch live ISO)
+
+Run these steps on the **official Arch Linux live ISO** (UEFI boot, networking required). The script **wipes every disk you select** (OS disk plus data-array disks).
+
+### Before you start
+
+1. **BIOS:** UEFI mode (CSM/Legacy off). Disable Secure Boot if the live USB will not boot. On UGREEN boxes when not running UGOS, disable the hardware watchdog.
+2. **Network:** Ethernet preferred — verify with `ping -c 3 archlinux.org`.
+3. **Live session:** Open a root shell (you are root on tty1 by default).
+
+### Clone the repo and run `install.sh`
+
+Repo: [github.com/pxxkachu/dxp480t_arch](https://github.com/pxxkachu/dxp480t_arch)
+
+```bash
+pacman -Sy --needed git
+git clone https://github.com/pxxkachu/dxp480t_arch.git /tmp/dxp480tp
+cd /tmp/dxp480tp
+bash install.sh
+```
+
+SSH clone (if you use GitHub SSH keys):
+
+```bash
+git clone git@github.com:pxxkachu/dxp480t_arch.git /tmp/dxp480tp
+cd /tmp/dxp480tp
+bash install.sh
+```
+
+**No git network access?** Copy the repo onto a second USB stick, mount it, and run from there:
+
+```bash
+mount /dev/sdX1 /mnt/usb    # use lsblk to find the stick
+cd /mnt/usb/dxp480tp
+bash install.sh
+```
+
+### What the installer prompts for
+
+| Prompt | Example |
+|--------|---------|
+| OS disk | Pick the NVMe/SATA boot drive by number |
+| EFI partition size | `512M` or `1G` |
+| Data array disks | At least 2 remaining disks, space-separated numbers |
+| Hostname | `dxp480tp` |
+| Username | `admin` |
+| Timezone | `America/Chicago` |
+| Locale | `en_US.UTF-8` |
+| Data array label | `media` |
+| Data array mount point | `/media` |
+| Password | root, then your user |
+| Confirmation | type `ERASE` to destroy the selected disks |
+
+The installer creates an ext4 root on the OS disk, a Btrfs RAID0 data pool (RAID1 metadata) on the data disks, systemd-boot, NetworkManager, OpenSSH, monthly scrub and daily snapshot timers, and zram swap. When it finishes, remove the install medium and reboot. Then continue with **Post-install** below (on the installed system).
+
+---
+
+## Post-install
+
+Steps below run **after** the first successful boot into the installed system.
 
 ## Pre-flight checks
 
@@ -216,7 +281,7 @@ sudo -u qui /usr/bin/qui generate-config --config-dir /var/lib/qui
 ls -la /var/lib/qui/config.toml
 ```
 
-The AUR package ships a default unit. Override it to set the data directory, listen on all interfaces for Tailscale access (change to `127.0.0.1` in step 13 for HTTPS-only), and run as the `qui` user with group `media`:
+The AUR package ships a default unit. Override it to set the data directory, listen on all interfaces for Tailscale access (change to `127.0.0.1` in step 14 for HTTPS-only), and run as the `qui` user with group `media`:
 
 ```bash
 sudo mkdir -p /etc/systemd/system/qui.service.d
@@ -232,7 +297,7 @@ ExecStart=/usr/bin/qui serve --config-dir /var/lib/qui --data-dir /var/lib/qui
 
 ### autobrr
 
-Pre-create the config so autobrr listens on all interfaces (needed for direct Tailscale access; change to `127.0.0.1` in step 13 for HTTPS-only). First generate a random session secret:
+Pre-create the config so autobrr listens on all interfaces (needed for direct Tailscale access; change to `127.0.0.1` in step 14 for HTTPS-only). First generate a random session secret:
 
 ```bash
 head /dev/urandom | tr -dc A-Za-z0-9 | head -c32; echo
@@ -307,7 +372,7 @@ sudo journalctl -u qbittorrent-nox@qbt -n 20 | grep -i password
 
 ## 12. Access services
 
-All services are accessible from any device on your Tailscale network using the Tailscale IP. After step 13, use the HTTPS URLs on `lehaus.io` instead.
+All services are accessible from any device on your Tailscale network using the Tailscale IP. After step 14, use the HTTPS URLs on `lehaus.io` instead.
 
 | Service      | URL                         |
 |--------------|-----------------------------|
@@ -320,7 +385,54 @@ All services are accessible from any device on your Tailscale network using the 
 | autobrr      | `http://<TS_IP>:7474`       |
 
 
-## 13. Set up Caddy for HTTPS (`lehaus.io`)
+## 13. Install Vaultwarden
+
+Self-hosted Bitwarden-compatible password manager. Listens on localhost; HTTPS via Caddy in step 14 at `https://warden.lehaus.io` (covered by the Porkbun wildcard `*` record).
+
+```bash
+sudo pacman -S vaultwarden vaultwarden-web
+```
+
+The package creates user `vaultwarden` and `/var/lib/vaultwarden`. Configure:
+
+```bash
+sudo nano /etc/vaultwarden.env
+```
+
+```
+DOMAIN=https://warden.lehaus.io
+ROCKET_ADDRESS=127.0.0.1
+ROCKET_PORT=8000
+WEB_VAULT_ENABLED=true
+WEB_VAULT_FOLDER=/usr/share/webapps/vaultwarden-web
+DATA_FOLDER=/var/lib/vaultwarden
+WEBSOCKET_ENABLED=false
+SIGNUPS_ALLOWED=true
+```
+
+```bash
+sudo chown vaultwarden:vaultwarden /var/lib/vaultwarden
+sudo chmod 700 /var/lib/vaultwarden
+sudo passwd --lock vaultwarden
+sudo systemctl enable --now vaultwarden
+curl -sI http://127.0.0.1:8000 | head -1
+```
+
+Create your account at `http://127.0.0.1:8000` on the NAS (or `https://warden.lehaus.io` after step 14). Then disable registration:
+
+```bash
+sudo nano /etc/vaultwarden.env
+# SIGNUPS_ALLOWED=false
+sudo systemctl restart vaultwarden
+```
+
+In Bitwarden clients, set **Server URL** to `https://warden.lehaus.io`.
+
+Optional admin panel — run `sudo -u vaultwarden vaultwarden hash`, add `ADMIN_TOKEN=<PHC output>` to `/etc/vaultwarden.env`, restart, then open `https://warden.lehaus.io/admin` with the password you entered (not the PHC string).
+
+Back up `/var/lib/vaultwarden` regularly (`db.sqlite3`, `rsa_key.pem`, `attachments/`). Use SQLite `.backup` while the service is running, or include the directory in btrfs snapshots (step 15).
+
+## 14. Set up Caddy for HTTPS (`lehaus.io`)
 
 ### Build Caddy with the Porkbun DNS module (NAS)
 
@@ -375,7 +487,7 @@ sudo chmod 600 /var/lib/caddy/porkbun.env
 | A | `*` | `<TS_IP>` | 600 |
 | A | `pihole` | `<PI_TS_IP>` | 600 |
 
-The wildcard covers NAS services (`qui.lehaus.io`, `qbit.lehaus.io`, `sonarr.lehaus.io`, etc.). The `pihole` record overrides the wildcard for `pihole.lehaus.io` only (`<PI_TS_IP>` = `tailscale ip -4` on **rpcmiv**).
+The wildcard covers NAS services (`qui.lehaus.io`, `qbit.lehaus.io`, `warden.lehaus.io`, `sonarr.lehaus.io`, etc.). The `pihole` record overrides the wildcard for `pihole.lehaus.io` only (`<PI_TS_IP>` = `tailscale ip -4` on **rpcmiv**).
 
 Verify from a tailnet device:
 
@@ -501,12 +613,16 @@ autobrr.lehaus.io {
     reverse_proxy 127.0.0.1:7474
 }
 
+warden.lehaus.io {
+    import tailnet
+    reverse_proxy 127.0.0.1:8000
+}
+
 plex.lehaus.io {
     import tailnet
-    reverse_proxy https://127.0.0.1:32400 {
-        header_up Host {host}
-    }
+    reverse_proxy 127.0.0.1:32400
 }
+
 ```
 
 Replace `you@lehaus.io` with your email (used for Let's Encrypt account notices).
@@ -533,6 +649,7 @@ systemctl status caddy
 | Radarr      | `https://radarr.lehaus.io`        |
 | Prowlarr    | `https://prowlarr.lehaus.io`      |
 | autobrr     | `https://autobrr.lehaus.io`       |
+| Vaultwarden | `https://warden.lehaus.io`        |
 | Plex (web)  | `https://plex.lehaus.io/web`      |
 
 
@@ -552,6 +669,17 @@ In Plex → **Settings → Network** (admin account):
 2. Leave **Remote access** enabled.
 
 Open `https://plex.lehaus.io/web` from any tailnet device. Sign out and back in once if the web client still shows the old URL.
+
+If you get **502 Bad Gateway**, Plex's self-signed cert on `:32400` is the usual cause — the Caddyfile block above must include `tls_insecure_skip_verify` in the `transport http` block. Verify from the NAS:
+
+```bash
+curl -sI http://127.0.0.1:32400/web | head -3
+curl -skI https://127.0.0.1:32400/web | head -3
+curl -sI https://plex.lehaus.io/web | head -5
+sudo journalctl -u caddy -n 30 --no-pager
+```
+
+After editing `/var/lib/caddy/Caddyfile`, reload: `sudo systemctl reload caddy`.
 
 **Do not** bind Plex to `127.0.0.1` in the [HTTPS-only lockdown](#enforce-https-only-recommended) below — remote access and client discovery need Plex listening on its normal interface.
 
@@ -580,6 +708,8 @@ host = "127.0.0.1"
 
 **Sonarr / Radarr / Prowlarr** — in each app's `config.xml`, set `<BindAddress>127.0.0.1</BindAddress>` (under Settings → General in the web UI, or edit the file directly while the service is stopped).
 
+**Vaultwarden** — skip; `ROCKET_ADDRESS=127.0.0.1` in step 13.
+
 **Plex** — skip this step. Remote access and app discovery require Plex to keep its default listen address; use `https://plex.lehaus.io/web` on the tailnet for metadata instead of locking down `:32400`.
 
 Restart affected services:
@@ -596,7 +726,7 @@ curl -m 3 http://<TS_IP>:8989 || echo "blocked as expected"
 
 HTTPS via Caddy should still work from any tailnet device.
 
-## 14. Set up Btrfs data SSD
+## 15. Set up Btrfs data SSD
 
 This sets up a single 2.5" SSD at `/data` with a subvolume layout that supports incremental backups via `btrfs send/receive` when a second SSD is added later.
 
@@ -758,7 +888,7 @@ sudo systemctl enable --now daily-data-snapshot.timer
 systemctl list-timers daily-data-snapshot.timer
 ```
 
-## 15. (Future) Add backup SSD with btrfs send/receive
+## 16. (Future) Add backup SSD with btrfs send/receive
 
 When the second SSD arrives, format it, do an initial full send, then incremental sends going forward.
 
